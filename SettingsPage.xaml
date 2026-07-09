@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="YamuraView.SettingsPage"
+             Title="Settings">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="16" Spacing="16">
+            <Label Text="Config File Path" FontAttributes="Bold" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <Entry Grid.Column="0" x:Name="ConfigPathEntry" />
+                <Button Grid.Column="1" Text="Browse..." Clicked="OnBrowseConfigClicked" />
+            </Grid>
+
+            <Label Text="Autoload Folder" FontAttributes="Bold" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <Entry Grid.Column="0" x:Name="AutoloadFolderEntry" />
+                <Button Grid.Column="1" Text="Browse..." Clicked="OnBrowseAutoloadFolderClicked" />
+            </Grid>
+
+            <Label Text="Run Colors" FontAttributes="Bold" />
+            <FlexLayout x:Name="ColorSwatchLayout" Wrap="Wrap" JustifyContent="Start" />
+
+            <Label Text="Chart Display" FontAttributes="Bold" />
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Strip Chart" VerticalOptions="Center" />
+                <Picker Grid.Row="0" Grid.Column="1" x:Name="StripChartDisplayModePicker" WidthRequest="140">
+                    <Picker.ItemsSource>
+                        <x:Array Type="{x:Type x:String}">
+                            <x:String>Line</x:String>
+                            <x:String>Point</x:String>
+                        </x:Array>
+                    </Picker.ItemsSource>
+                </Picker>
+                <Label Grid.Row="1" Grid.Column="0" Text="Track Map" VerticalOptions="Center" />
+                <Picker Grid.Row="1" Grid.Column="1" x:Name="TrackMapDisplayModePicker" WidthRequest="140">
+                    <Picker.ItemsSource>
+                        <x:Array Type="{x:Type x:String}">
+                            <x:String>Line</x:String>
+                            <x:String>Point</x:String>
+                        </x:Array>
+                    </Picker.ItemsSource>
+                </Picker>
+                <Label Grid.Row="2" Grid.Column="0" Text="Traction Circle" VerticalOptions="Center" />
+                <Picker Grid.Row="2" Grid.Column="1" x:Name="TractionCircleDisplayModePicker" WidthRequest="140">
+                    <Picker.ItemsSource>
+                        <x:Array Type="{x:Type x:String}">
+                            <x:String>Line</x:String>
+                            <x:String>Point</x:String>
+                        </x:Array>
+                    </Picker.ItemsSource>
+                </Picker>
+            </Grid>
+
+            <Label Text="Log" FontAttributes="Bold" />
+            <Button Text="View Log" Clicked="OnViewLogClicked" HorizontalOptions="Start" />
+
+            <HorizontalStackLayout Spacing="8" HorizontalOptions="End">
+                <Button Text="Cancel" Clicked="OnCancelClicked" />
+                <Button Text="Save" Clicked="OnSaveClicked" />
+            </HorizontalStackLayout>
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

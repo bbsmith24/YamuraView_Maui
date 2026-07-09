@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="YamuraView.MainPage">
+
+    <!-- Custom top bar instead of ContentPage.ToolbarItems: ToolbarItem has no FontSize
+         property (it's a native per-platform toolbar button), so plain Buttons are used here
+         to get bigger, consistently-sized menu text across platforms. -->
+    <Grid Padding="12" RowDefinitions="Auto,*" RowSpacing="8">
+
+        <HorizontalStackLayout Grid.Row="0" Spacing="8">
+            <Button Text="Open" FontSize="16" Clicked="OnOpenFilesClicked" />
+            <Button Text="Strip Chart Channels" FontSize="16" Clicked="OnSelectStripChartChannelsClicked" />
+            <Button Text="Track Map Channels" FontSize="16" Clicked="OnSelectTrackMapChannelsClicked" />
+            <Button Text="Traction Circle Channels" FontSize="16" Clicked="OnSelectTractionCircleChannelsClicked" />
+            <Button Text="Zoom All" FontSize="16" Clicked="OnZoomAllClicked" />
+            <Button Text="Settings" FontSize="16" Clicked="OnSettingsClicked" />
+        </HorizontalStackLayout>
+
+        <!-- Strip Chart (left) | Track Map over Traction Circle (right) - same split as the WinForms app -->
+        <Grid Grid.Row="1" ColumnDefinitions="2*,1*" ColumnSpacing="8">
+
+            <Border Grid.Column="0"
+                    Stroke="{AppThemeBinding Light=#CCCCCC, Dark=#444444}"
+                    StrokeThickness="1"
+                    StrokeShape="RoundRectangle 8"
+                    Padding="4">
+                <Grid RowDefinitions="*,Auto">
+                    <GraphicsView Grid.Row="0" x:Name="StripChartView" />
+                    <!-- pans the drag-to-zoom window; only shown while zoomed in -->
+                    <Slider Grid.Row="1"
+                            x:Name="StripChartScrollBar"
+                            IsVisible="False"
+                            HeightRequest="24"
+                            Margin="0,2,0,0"
+                            ValueChanged="OnStripChartScrollBarValueChanged" />
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="1" RowDefinitions="1*,1*" RowSpacing="8">
+                <Border Grid.Row="0"
+                        Stroke="{AppThemeBinding Light=#CCCCCC, Dark=#444444}"
+                        StrokeThickness="1"
+                        StrokeShape="RoundRectangle 8"
+                        Padding="4">
+                    <GraphicsView x:Name="TrackMapView" />
+                </Border>
+                <Border Grid.Row="1"
+                        Stroke="{AppThemeBinding Light=#CCCCCC, Dark=#444444}"
+                        StrokeThickness="1"
+                        StrokeShape="RoundRectangle 8"
+                        Padding="4">
+                    <GraphicsView x:Name="TractionCircleView" />
+                </Border>
+            </Grid>
+
+        </Grid>
+    </Grid>
+
+</ContentPage>
