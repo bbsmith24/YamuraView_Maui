@@ -15,6 +15,7 @@ namespace YamuraView;
 public class StripChartDrawable : IDrawable
 {
     public const string TimeAxis = "Time";
+    public const float DefaultPenWidth = 1.5f;
 
     public DataLogger DataLogger { get; set; } = null!;
     public string XAxisChannel { get; set; } = TimeAxis;
@@ -51,6 +52,17 @@ public class StripChartDrawable : IDrawable
         ChannelColorOverride != null && ChannelColorOverride.TryGetValue((run.runName, channelName), out Color? overrideColor)
             ? overrideColor
             : ChartColors.ForRunIndex(DataLogger.runData.IndexOf(run));
+
+    /// <summary>
+    /// Trace pen width (in pixels) per channel name - applies to every run's instance of the
+    /// channel at once, like <see cref="InvertedChannels"/>. In point display mode it's the
+    /// point radius instead. A channel missing from this map (or a null map) draws at
+    /// <see cref="DefaultPenWidth"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, float>? ChannelPenWidth { get; set; }
+
+    private float PenWidthFor(string channelName) =>
+        ChannelPenWidth != null && ChannelPenWidth.TryGetValue(channelName, out float width) ? width : DefaultPenWidth;
 
     /// <summary>
     /// Channel names whose trace is flipped vertically within its subgraph band - matches the
@@ -97,6 +109,220 @@ public class StripChartDrawable : IDrawable
     // what the Strip Chart's X axis currently is
     private List<(RunData Run, List<(float RawTime, float AxisValue)> Points)> cachedAxisSeries = new();
 
+    // Draw()'s expensive step is joining every selected channel's points and computing the
+    // derived ranges - redoing that on every repaint made touch cursor-scrubbing lag on big
+    // logs, so the results are cached and rebuilt only when the input fingerprint changes
+    // (cursor moves and zoom changes repaint from the cache). Null fingerprint = cache invalid.
+    private int? cachedDataFingerprint;
+    private int cachedGraphCount = 1;
+    private float[] cachedBandMinY = { -1f };
+    private float[] cachedBandMaxY = { 1f };
+
+    // the pixel-space trace paths are cached too (like the WinForms app's cached
+    // GraphicsPaths): once the data cache hits, building the paths (a scale + segment per
+    // point) is the remaining per-frame cost, and cursor-only repaints don't change the
+    // data->pixel mapping at all - they just re-stroke this cached geometry. Keyed on the
+    // data fingerprint plus everything else that moves pixels: view size, the zoom window,
+    // and which channels are inverted. (A data-space path reused across zooms via a canvas
+    // transform - the other WinForms trick - doesn't work here: the X/Y scales are wildly
+    // non-uniform and the transform would distort stroke widths.)
+    private int? cachedPathKey;
+    private List<(RunData Run, string ChannelName, PathF Path)> cachedPaths = new();
+
+    private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float minX, float maxX)
+    {
+        HashCode hash = new();
+        hash.Add(dataFingerprint);
+        hash.Add(dirtyRect.Width);
+        hash.Add(dirtyRect.Height);
+        hash.Add(minX);
+        hash.Add(maxX);
+        if (InvertedChannels != null)
+        {
+            foreach (string name in InvertedChannels)
+            {
+                hash.Add(name);
+            }
+        }
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Cheap fingerprint of every input the cached data derives from: the X axis channel,
+    /// which (run, channel) pairs are selected and how many points they hold, per-run time
+    /// offsets, and the subgraph band assignments. O(runs + channels) per frame versus the
+    /// O(points) rebuild it avoids. Point counts stand in for content, since channel data is
+    /// only ever added wholesale, never edited in place.
+    /// </summary>
+    private int ComputeDataFingerprint()
+    {
+        HashCode hash = new();
+        hash.Add(XAxisChannel);
+        hash.Add(DataLogger.runData.Count);
+        hash.Add(SelectedSeries.Count);
+        foreach (RunData run in DataLogger.runData)
+        {
+            hash.Add(run.runName);
+            hash.Add(run.TimeOffset);
+            hash.Add(run.DistanceOffset);
+            if (run.channels.TryGetValue(XAxisChannel, out DataChannel? axisChannel))
+            {
+                hash.Add(axisChannel.DataPoints.Count);
+            }
+            foreach ((string channelName, DataChannel channel) in run.channels)
+            {
+                if (SelectedSeries.Contains((run.runName, channelName)))
+                {
+                    hash.Add(channelName);
+                    hash.Add(channel.DataPoints.Count);
+                }
+            }
+        }
+        if (ChannelGraphIndex != null)
+        {
+            foreach ((string channelName, int graphIndex) in ChannelGraphIndex)
+            {
+                hash.Add(channelName);
+                hash.Add(graphIndex);
+            }
+        }
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Rebuilds everything derived purely from the data/selection/axis inputs: the joined
+    /// per-series point lists (a timestamp join when the X axis isn't Time), the axis
+    /// conversion curves, the full X range, and each subgraph band's Y range. Split out of
+    /// Draw() and guarded by <see cref="ComputeDataFingerprint"/> because it touches every
+    /// data point - repaints that only move the cursor or the zoom window reuse the cache.
+    /// </summary>
+    private void RebuildDataCache(bool xIsTime)
+    {
+        // a distance X axis gets the per-run DistanceOffset the same way Time gets
+        // TimeOffset, so distance alignment (auto or via the wizard) shifts the display
+        bool xIsDistance = !xIsTime && XAxisChannel.StartsWith("Distance", StringComparison.OrdinalIgnoreCase);
+
+        List<(RunData Run, string ChannelName, List<(float X, float Y)> Points)> series = new();
+        List<(RunData Run, List<(float RawTime, float AxisValue)> Points)> axisSeries = new();
+        foreach (RunData run in DataLogger.runData)
+        {
+            float distanceOffset = xIsDistance ? run.DistanceOffset : 0f;
+            DataChannel? xChan = null;
+            if (xIsTime)
+            {
+                run.channels.TryGetValue(TimeAxis, out xChan);
+            }
+            else if (!run.channels.TryGetValue(XAxisChannel, out xChan))
+            {
+                continue;
+            }
+
+            if (xChan != null && xChan.DataPoints.Count > 0)
+            {
+                List<(float, float)> axisPoints = new();
+                foreach (KeyValuePair<float, float> point in xChan.DataPoints)
+                {
+                    float axisVal = xIsTime ? point.Key + run.TimeOffset : point.Value + distanceOffset;
+                    axisPoints.Add((point.Key, axisVal));
+                }
+                axisSeries.Add((run, axisPoints));
+            }
+
+            foreach ((string channelName, DataChannel yChan) in run.channels)
+            {
+                if (!SelectedSeries.Contains((run.runName, channelName)) || yChan.DataPoints.Count == 0)
+                {
+                    continue;
+                }
+                List<(float, float)> points = new();
+                foreach (KeyValuePair<float, float> point in yChan.DataPoints)
+                {
+                    float xVal;
+                    if (xIsTime)
+                    {
+                        xVal = point.Key + run.TimeOffset;
+                    }
+                    else if (xChan == null || !xChan.DataPoints.TryGetValue(point.Key, out xVal))
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        xVal += distanceOffset;
+                    }
+                    points.Add((xVal, point.Value));
+                }
+                if (points.Count > 0)
+                {
+                    series.Add((run, channelName, points));
+                }
+            }
+        }
+
+        cachedAxisSeries = axisSeries;
+        cachedSeries = series;
+
+        float minX = float.MaxValue, maxX = float.MinValue;
+        foreach ((_, _, List<(float X, float Y)> points) in series)
+        {
+            foreach ((float x, _) in points)
+            {
+                minX = Math.Min(minX, x);
+                maxX = Math.Max(maxX, x);
+            }
+        }
+        if (minX >= maxX)
+        {
+            minX -= 1f;
+            maxX += 1f;
+        }
+        cachedFullMinX = minX;
+        cachedFullMaxX = maxX;
+
+        // one Y range per stacked subgraph band, from only the channels assigned to it -
+        // matches the WinForms app's "Assign to Graph" feature (e.g. RPM in its own band so
+        // it doesn't get flattened by sharing a Y scale with G-force channels)
+        int graphCount = 1;
+        foreach ((_, string channelName, _) in series)
+        {
+            graphCount = Math.Max(graphCount, GraphIndexFor(channelName) + 1);
+        }
+        float[] bandMinY = new float[graphCount];
+        float[] bandMaxY = new float[graphCount];
+        for (int g = 0; g < graphCount; g++)
+        {
+            bandMinY[g] = float.MaxValue;
+            bandMaxY[g] = float.MinValue;
+        }
+        foreach ((_, string channelName, List<(float X, float Y)> points) in series)
+        {
+            int g = GraphIndexFor(channelName);
+            foreach ((_, float y) in points)
+            {
+                bandMinY[g] = Math.Min(bandMinY[g], y);
+                bandMaxY[g] = Math.Max(bandMaxY[g], y);
+            }
+        }
+        for (int g = 0; g < graphCount; g++)
+        {
+            if (bandMinY[g] > bandMaxY[g])
+            {
+                // no channel ended up assigned to this band (a gap in saved graph indices)
+                bandMinY[g] = -1f;
+                bandMaxY[g] = 1f;
+            }
+            else if (bandMinY[g] == bandMaxY[g])
+            {
+                // flat data - pad so it doesn't collapse to a single line
+                bandMinY[g] -= 1f;
+                bandMaxY[g] += 1f;
+            }
+        }
+        cachedGraphCount = graphCount;
+        cachedBandMinY = bandMinY;
+        cachedBandMaxY = bandMaxY;
+    }
+
     /// <summary>
     /// Converts a pixel X coordinate (from a pointer/mouse event over the GraphicsView)
     /// to the corresponding X-axis value (in <see cref="XAxisChannel"/>'s own units - e.g.
@@ -111,6 +337,18 @@ public class StripChartDrawable : IDrawable
         }
         float t = cachedMinX + (pixelX - cachedPlotLeft) / (cachedPlotRight - cachedPlotLeft) * (cachedMaxX - cachedMinX);
         return Math.Clamp(t, cachedMinX, cachedMaxX);
+    }
+
+    /// <summary>Pixel X for an axis value using the last Draw()'s scale - the inverse of
+    /// <see cref="PixelXToTime"/>. Null before anything has been plotted.</summary>
+    public float? TimeToPixelX(float axisValue)
+    {
+        if (!hasValidScale || cachedMaxX <= cachedMinX)
+        {
+            return null;
+        }
+        float clamped = Math.Clamp(axisValue, cachedMinX, cachedMaxX);
+        return cachedPlotLeft + (clamped - cachedMinX) / (cachedMaxX - cachedMinX) * (cachedPlotRight - cachedPlotLeft);
     }
 
     /// <summary>
@@ -225,6 +463,7 @@ public class StripChartDrawable : IDrawable
             hasValidScale = false;
             cachedSeries = new();
             cachedAxisSeries = new();
+            cachedDataFingerprint = null;
             DrawCenteredMessage(canvas, dirtyRect, "No data loaded");
             return;
         }
@@ -234,94 +473,30 @@ public class StripChartDrawable : IDrawable
             hasValidScale = false;
             cachedSeries = new();
             cachedAxisSeries = new();
+            cachedDataFingerprint = null;
             DrawCenteredMessage(canvas, dirtyRect, "No channels selected");
             return;
         }
 
         bool xIsTime = XAxisChannel == TimeAxis;
 
-        // gather (x, y) points per run/channel once, since building them requires a join
-        // when the X axis isn't Time - reused below for range calc and drawing
-        List<(RunData Run, string ChannelName, List<(float X, float Y)> Points)> series = new();
-        List<(RunData Run, List<(float RawTime, float AxisValue)> Points)> axisSeries = new();
-        foreach (RunData run in DataLogger.runData)
+        int fingerprint = ComputeDataFingerprint();
+        if (fingerprint != cachedDataFingerprint)
         {
-            DataChannel? xChan = null;
-            if (xIsTime)
-            {
-                run.channels.TryGetValue(TimeAxis, out xChan);
-            }
-            else if (!run.channels.TryGetValue(XAxisChannel, out xChan))
-            {
-                continue;
-            }
-
-            if (xChan != null && xChan.DataPoints.Count > 0)
-            {
-                List<(float, float)> axisPoints = new();
-                foreach (KeyValuePair<float, float> point in xChan.DataPoints)
-                {
-                    float axisVal = xIsTime ? point.Key + run.TimeOffset : point.Value;
-                    axisPoints.Add((point.Key, axisVal));
-                }
-                axisSeries.Add((run, axisPoints));
-            }
-
-            foreach ((string channelName, DataChannel yChan) in run.channels)
-            {
-                if (!SelectedSeries.Contains((run.runName, channelName)) || yChan.DataPoints.Count == 0)
-                {
-                    continue;
-                }
-                List<(float, float)> points = new();
-                foreach (KeyValuePair<float, float> point in yChan.DataPoints)
-                {
-                    float xVal;
-                    if (xIsTime)
-                    {
-                        xVal = point.Key + run.TimeOffset;
-                    }
-                    else if (xChan == null || !xChan.DataPoints.TryGetValue(point.Key, out xVal))
-                    {
-                        continue;
-                    }
-                    points.Add((xVal, point.Value));
-                }
-                if (points.Count > 0)
-                {
-                    series.Add((run, channelName, points));
-                }
-            }
+            RebuildDataCache(xIsTime);
+            cachedDataFingerprint = fingerprint;
         }
 
-        cachedAxisSeries = axisSeries;
-
-        if (series.Count == 0)
+        if (cachedSeries.Count == 0)
         {
             hasValidScale = false;
-            cachedSeries = new();
             DrawCenteredMessage(canvas, dirtyRect, "Not enough data to plot");
             return;
         }
 
-        cachedSeries = series;
-
-        float minX = float.MaxValue, maxX = float.MinValue;
-        foreach ((_, _, List<(float X, float Y)> points) in series)
-        {
-            foreach ((float x, _) in points)
-            {
-                minX = Math.Min(minX, x);
-                maxX = Math.Max(maxX, x);
-            }
-        }
-        if (minX >= maxX)
-        {
-            minX -= 1f;
-            maxX += 1f;
-        }
-        cachedFullMinX = minX;
-        cachedFullMaxX = maxX;
+        List<(RunData Run, string ChannelName, List<(float X, float Y)> Points)> series = cachedSeries;
+        float minX = cachedFullMinX;
+        float maxX = cachedFullMaxX;
 
         // a drag-to-zoom selection narrows the visible X window without touching the data
         // itself - points outside it just fall outside the drawn/plot area, same as any zoom
@@ -331,45 +506,9 @@ public class StripChartDrawable : IDrawable
             maxX = ZoomMaxX.Value;
         }
 
-        // one Y range per stacked subgraph band, from only the channels assigned to it -
-        // matches the WinForms app's "Assign to Graph" feature (e.g. RPM in its own band so
-        // it doesn't get flattened by sharing a Y scale with G-force channels)
-        int graphCount = 1;
-        foreach ((_, string channelName, _) in series)
-        {
-            graphCount = Math.Max(graphCount, GraphIndexFor(channelName) + 1);
-        }
-        float[] bandMinY = new float[graphCount];
-        float[] bandMaxY = new float[graphCount];
-        for (int g = 0; g < graphCount; g++)
-        {
-            bandMinY[g] = float.MaxValue;
-            bandMaxY[g] = float.MinValue;
-        }
-        foreach ((_, string channelName, List<(float X, float Y)> points) in series)
-        {
-            int g = GraphIndexFor(channelName);
-            foreach ((_, float y) in points)
-            {
-                bandMinY[g] = Math.Min(bandMinY[g], y);
-                bandMaxY[g] = Math.Max(bandMaxY[g], y);
-            }
-        }
-        for (int g = 0; g < graphCount; g++)
-        {
-            if (bandMinY[g] > bandMaxY[g])
-            {
-                // no channel ended up assigned to this band (a gap in saved graph indices)
-                bandMinY[g] = -1f;
-                bandMaxY[g] = 1f;
-            }
-            else if (bandMinY[g] == bandMaxY[g])
-            {
-                // flat data - pad so it doesn't collapse to a single line
-                bandMinY[g] -= 1f;
-                bandMaxY[g] += 1f;
-            }
-        }
+        int graphCount = cachedGraphCount;
+        float[] bandMinY = cachedBandMinY;
+        float[] bandMaxY = cachedBandMaxY;
 
         const float plotLeft = 46, plotTop = 8, rightMargin = 8, bottomMargin = 22;
         float plotRight = dirtyRect.Width - rightMargin;
@@ -408,48 +547,120 @@ public class StripChartDrawable : IDrawable
         }
 
         bool pointMode = DisplayMode == ChartDisplayMode.Point;
-        foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
+        foreach ((_, string channelName, List<(float X, float Y)> points) in series)
         {
             if (points.Count < (pointMode ? 1 : 2))
             {
                 continue;
             }
-            int g = GraphIndexFor(channelName);
-            bool inverted = IsInverted(channelName);
-            string displayName = inverted ? channelName + " (inv)" : channelName;
-            if (!bandChannelNames[g].Contains(displayName))
+            string displayName = IsInverted(channelName) ? channelName + " (inv)" : channelName;
+            List<string> names = bandChannelNames[GraphIndexFor(channelName)];
+            if (!names.Contains(displayName))
             {
-                bandChannelNames[g].Add(displayName);
+                names.Add(displayName);
             }
-            Color color = ColorFor(run, channelName);
-            if (pointMode)
+        }
+
+        if (pointMode)
+        {
+            foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
             {
-                canvas.FillColor = color;
-                foreach ((float x, float y) in points)
+                if (points.Count == 0)
                 {
-                    canvas.FillCircle(ScaleX(x), ScaleYForChannel(g, y, inverted), 1.5f);
+                    continue;
                 }
-            }
-            else
-            {
-                canvas.StrokeColor = color;
-                canvas.StrokeSize = 1.5f;
-                PathF path = new();
-                bool first = true;
+                int g = GraphIndexFor(channelName);
+                bool inverted = IsInverted(channelName);
+                float penWidth = PenWidthFor(channelName);
+                canvas.FillColor = ColorFor(run, channelName);
+                float lastPx = float.MinValue, lastPy = float.MinValue;
                 foreach ((float x, float y) in points)
                 {
                     float px = ScaleX(x);
-                    float py = ScaleYForChannel(g, y, inverted);
-                    if (first)
+                    if (px < plotLeft - penWidth || px > plotRight + penWidth)
                     {
-                        path.MoveTo(px, py);
-                        first = false;
+                        continue; // outside the visible X window (when zoomed)
                     }
-                    else
+                    float py = ScaleYForChannel(g, y, inverted);
+                    if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
                     {
-                        path.LineTo(px, py);
+                        continue; // sub-pixel duplicate of the previous drawn point
+                    }
+                    canvas.FillCircle(px, py, penWidth);
+                    lastPx = px;
+                    lastPy = py;
+                }
+            }
+        }
+        else
+        {
+            int pathKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX);
+            if (pathKey != cachedPathKey)
+            {
+                cachedPaths = new();
+                foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
+                {
+                    if (points.Count < 2)
+                    {
+                        continue;
+                    }
+                    int g = GraphIndexFor(channelName);
+                    bool inverted = IsInverted(channelName);
+                    PathF path = new();
+                    // no figure is opened until there's a visible segment to draw: every
+                    // MoveTo must be followed by at least one LineTo before the next MoveTo,
+                    // or Win2D's path builder throws ("A call to BeginFigure occurred, when
+                    // the figure was already begun") - which happened when a trace's first
+                    // point sat outside the zoom window
+                    bool haveLast = false;
+                    bool pendingMove = true;
+                    float lastPx = 0, lastPy = 0;
+                    foreach ((float x, float y) in points)
+                    {
+                        float px = ScaleX(x);
+                        float py = ScaleYForChannel(g, y, inverted);
+                        if (!haveLast)
+                        {
+                            haveLast = true;
+                        }
+                        else if ((px < plotLeft && lastPx < plotLeft) || (px > plotRight && lastPx > plotRight))
+                        {
+                            // both endpoints off the same side of the plot (zoomed): the whole
+                            // segment is invisible - drop it and restart the path on re-entry
+                            pendingMove = true;
+                        }
+                        else if (!pendingMove && Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                        {
+                            continue; // sub-pixel move - drop it, keep the previous point as anchor
+                        }
+                        else
+                        {
+                            if (pendingMove)
+                            {
+                                // start (or restart) the figure from the previous point so the
+                                // first/crossing segment enters at the correct angle
+                                path.MoveTo(lastPx, lastPy);
+                                pendingMove = false;
+                            }
+                            path.LineTo(px, py);
+                        }
+                        lastPx = px;
+                        lastPy = py;
+                    }
+                    if (path.Count > 0)
+                    {
+                        cachedPaths.Add((run, channelName, path));
                     }
                 }
+                cachedPathKey = pathKey;
+            }
+
+            // color and pen width are looked up at stroke time, so changing them doesn't
+            // invalidate the cached geometry
+            foreach ((RunData run, string channelName, PathF path) in cachedPaths)
+            {
+                canvas.StrokeColor = ColorFor(run, channelName);
+                canvas.StrokeSize = PenWidthFor(channelName);
                 canvas.DrawPath(path);
             }
         }

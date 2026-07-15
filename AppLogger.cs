@@ -11,16 +11,24 @@ public static class AppLogger
     private static readonly string LogFilePath = Path.Combine(FileSystem.AppDataDirectory, "YamuraView.log");
     private static readonly object LockObj = new();
 
+    // one persistent writer instead of open/append/close per message: a parse that logs
+    // per bad record was spending most of its time reopening the log file
+    private static StreamWriter? writer;
+
     public static void Init()
     {
         lock (LockObj)
         {
             try
             {
-                File.WriteAllText(LogFilePath, $"YamuraView log started {DateTime.Now:G}{Environment.NewLine}");
+                writer?.Dispose();
+                FileStream stream = new(LogFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                writer = new StreamWriter(stream) { AutoFlush = true };
+                writer.WriteLine($"YamuraView log started {DateTime.Now:G}");
             }
             catch (Exception ex)
             {
+                writer = null;
                 System.Diagnostics.Debug.WriteLine($"[YamuraView] Failed to init log file {LogFilePath}: {ex.Message}");
             }
         }
@@ -32,7 +40,7 @@ public static class AppLogger
         {
             try
             {
-                File.AppendAllText(LogFilePath, $"{DateTime.Now:G}  {message}{Environment.NewLine}");
+                writer?.WriteLine($"{DateTime.Now:G}  {message}");
             }
             catch (Exception ex)
             {
@@ -47,7 +55,14 @@ public static class AppLogger
         {
             try
             {
-                return File.Exists(LogFilePath) ? File.ReadAllText(LogFilePath) : "";
+                if (!File.Exists(LogFilePath))
+                {
+                    return "";
+                }
+                // the writer holds the file open, so read with a share mode that allows it
+                using FileStream stream = new(LogFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using StreamReader reader = new(stream);
+                return reader.ReadToEnd();
             }
             catch (Exception ex)
             {

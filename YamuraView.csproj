@@ -20,15 +20,41 @@
 		       <MauiXaml Update="MyPage.xaml" Inflator="Runtime" /> (force runtime inflation) -->
 		<MauiXamlInflator>SourceGen</MauiXamlInflator>
 
+		<!-- App version - stamped into the exe's file properties (FileVersion/ProductVersion)
+		     and read back at runtime by AppVersion for the About box. Bump major/minor here.
+		     VersionStatus "beta" marks a beta build - make it empty for a release build.
+		     The build number lives in buildnumber.txt and is bumped automatically at the
+		     start of every full Release-configuration build (see BumpBuildNumberForRelease
+		     below); Debug builds reuse the current number. -->
+		<VersionMajor>1</VersionMajor>
+		<VersionMinor>0</VersionMinor>
+		<VersionStatus>beta</VersionStatus>
+		<VersionBuildNumber>0</VersionBuildNumber>
+		<VersionBuildNumber Condition="Exists('$(MSBuildProjectDirectory)\buildnumber.txt')">$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\buildnumber.txt').Trim())</VersionBuildNumber>
+		<Version>$(VersionMajor).$(VersionMinor).$(VersionBuildNumber)</Version>
+		<Version Condition="'$(VersionStatus)' != ''">$(Version)-$(VersionStatus)</Version>
+		<!-- MAUI's targets replace InformationalVersion (the exe's ProductVersion) with the
+		     suffix-less ApplicationDisplayVersion unless it's pinned to Version explicitly -->
+		<InformationalVersion>$(Version)</InformationalVersion>
+		<Product>YamuraView</Product>
+		<Company>Yamura Electronics</Company>
+		<!-- keep ProductVersion a clean "1.0.0-beta" instead of appending a source hash -->
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
 		<!-- Display name -->
 		<ApplicationTitle>YamuraView</ApplicationTitle>
 
-		<!-- App Identifier -->
-		<ApplicationId>com.companyname.yamuraview</ApplicationId>
+		<!-- App Identifier (Android package name - permanent app identity, don't change
+		     after distributing or updates stop working) -->
+		<ApplicationId>com.yamuraelectronics.yamuraview</ApplicationId>
 
 		<!-- Versions -->
-		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
-		<ApplicationVersion>1</ApplicationVersion>
+		<ApplicationDisplayVersion>$(VersionMajor).$(VersionMinor).$(VersionBuildNumber)</ApplicationDisplayVersion>
+		<!-- Android versionCode (also the 4th part of the MSIX version) - tied to the
+		     auto-bumped build number so every release is a higher version than the last and
+		     installs as an update; floored at 1 because Android rejects versionCode 0 -->
+		<ApplicationVersion>$(VersionBuildNumber)</ApplicationVersion>
+		<ApplicationVersion Condition="'$(VersionBuildNumber)' == '0'">1</ApplicationVersion>
 
 		<!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
 		<WindowsPackageType>None</WindowsPackageType>
@@ -41,8 +67,8 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<!-- App Icon -->
-		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
+		<!-- App Icon - Japanese flag: white background layer, red disc foreground -->
+		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#FFFFFF" />
 
 		<!-- Splash Screen -->
 		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
@@ -66,5 +92,22 @@
 	<ItemGroup>
 		<ProjectReference Include="..\YamuraView.Core\YamuraView.Core.csproj" />
 	</ItemGroup>
+
+	<!-- Bumps buildnumber.txt at the start of every full Release build, before the
+	     per-platform inner builds evaluate the version - so the build being made already
+	     carries the new number, every platform gets the same one, and buildnumber.txt always
+	     equals the most recent Release build's number (a later per-platform publish with -f
+	     reuses it rather than bumping again, since -f skips this outer-build hook). -->
+	<Target Name="BumpBuildNumberForRelease"
+	        BeforeTargets="DispatchToInnerBuilds"
+	        Condition="'$(Configuration)' == 'Release'">
+		<PropertyGroup>
+			<NextVersionBuildNumber>$([MSBuild]::Add($(VersionBuildNumber), 1))</NextVersionBuildNumber>
+		</PropertyGroup>
+		<WriteLinesToFile File="$(MSBuildProjectDirectory)\buildnumber.txt"
+		                  Lines="$(NextVersionBuildNumber)"
+		                  Overwrite="true" />
+		<Message Importance="high" Text="Release build: bumped build number to $(VersionMajor).$(VersionMinor).$(NextVersionBuildNumber)" />
+	</Target>
 
 </Project>

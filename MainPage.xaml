@@ -14,7 +14,10 @@
             <Button Text="Track Map Channels" FontSize="16" Clicked="OnSelectTrackMapChannelsClicked" />
             <Button Text="Traction Circle Channels" FontSize="16" Clicked="OnSelectTractionCircleChannelsClicked" />
             <Button Text="Zoom All" FontSize="16" Clicked="OnZoomAllClicked" />
+            <Button Text="Align Runs" FontSize="16" Clicked="OnAlignRunsClicked" />
+            <Button Text="Delta Time" FontSize="16" Clicked="OnDeltaTimeClicked" />
             <Button Text="Settings" FontSize="16" Clicked="OnSettingsClicked" />
+            <Button Text="About" FontSize="16" Clicked="OnAboutClicked" />
         </HorizontalStackLayout>
 
         <!-- Strip Chart (left) | Track Map over Traction Circle (right) - same split as the WinForms app -->

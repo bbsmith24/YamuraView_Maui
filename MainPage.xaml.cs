@@ -35,6 +35,24 @@ public partial class MainPage : ContentPage
     // matches the WinForms app's "Invert" tree context menu item
     private readonly HashSet<string> stripChartInvertedChannels = new();
 
+    // trace pen width per channel name, across every run at once; a channel not present here
+    // draws at StripChartDrawable.DefaultPenWidth
+    private readonly Dictionary<string, float> stripChartChannelPenWidth = new();
+
+    // channel names whose group starts expanded in the Strip Chart channel picker - groups
+    // default to collapsed; remembered from the last time the picker was applied (and across
+    // restarts via config)
+    private readonly HashSet<string> stripChartExpandedChannels = new();
+
+    // per-run trace overrides for the XY charts (color/invert/pen width, set from their run
+    // pickers) - keyed by run name, independent per chart
+    private readonly Dictionary<string, Color> trackMapRunColor = new();
+    private readonly HashSet<string> trackMapInvertedRuns = new();
+    private readonly Dictionary<string, float> trackMapRunPenWidth = new();
+    private readonly Dictionary<string, Color> tractionCircleRunColor = new();
+    private readonly HashSet<string> tractionCircleInvertedRuns = new();
+    private readonly Dictionary<string, float> tractionCircleRunPenWidth = new();
+
     // default channel names applied to a run's first appearance on the Strip Chart; starts
     // out as gX/gY/gZ but is overwritten by whatever the config file remembers from last time
     private HashSet<string> stripChartDefaultChannelNames = new() { "gX", "gY", "gZ" };
@@ -79,6 +97,7 @@ public partial class MainPage : ContentPage
             ChannelGraphIndex = stripChartChannelGraphIndex,
             ChannelColorOverride = stripChartChannelColorOverride,
             InvertedChannels = stripChartInvertedChannels,
+            ChannelPenWidth = stripChartChannelPenWidth,
             DisplayMode = stripChartDisplayMode
         };
         trackMapDrawable = new XYChartDrawable
@@ -88,7 +107,10 @@ public partial class MainPage : ContentPage
             YChannel = trackMapYAxis,
             EqualScale = true,
             SelectedRuns = trackMapSelectedRuns,
-            DisplayMode = trackMapDisplayMode
+            DisplayMode = trackMapDisplayMode,
+            RunColorOverride = trackMapRunColor,
+            InvertedRuns = trackMapInvertedRuns,
+            RunPenWidth = trackMapRunPenWidth
         };
         tractionCircleDrawable = new XYChartDrawable
         {
@@ -97,49 +119,43 @@ public partial class MainPage : ContentPage
             YChannel = tractionCircleYAxis,
             EqualScale = true,
             SelectedRuns = tractionCircleSelectedRuns,
-            DisplayMode = tractionCircleDisplayMode
+            DisplayMode = tractionCircleDisplayMode,
+            RunColorOverride = tractionCircleRunColor,
+            InvertedRuns = tractionCircleInvertedRuns,
+            RunPenWidth = tractionCircleRunPenWidth
         };
 
         StripChartView.Drawable = stripChartDrawable;
         TrackMapView.Drawable = trackMapDrawable;
         TractionCircleView.Drawable = tractionCircleDrawable;
 
-        // Strip Chart drives the cursor (vertical line, from mouse position); Track Map
-        // and Traction Circle just track it (box cursor at the nearest point in time) -
-        // same relationship as the WinForms app's VERTICAL/BOX cursor modes. A press-drag-
-        // release instead zooms the Strip Chart to the dragged time window and narrows Track
-        // Map/Traction Circle to just that window's data, like the WinForms app's drag-zoom.
+        // Strip Chart drives the cursor (vertical line); Track Map and Traction Circle just
+        // track it (box cursor at the nearest point in time) - same relationship as the
+        // WinForms app's VERTICAL/BOX cursor modes. Touch and mouse work differently:
+        // one finger (or pen) always scrubs the cursor and a two-finger pinch zooms the
+        // X window, while a mouse keeps hover-scrub plus the press-drag zoom band
+        // (a mouse can't pinch).
         PointerGestureRecognizer stripChartPointer = new();
-        stripChartPointer.PointerPressed += (_, e) =>
-        {
-            Point? position = e.GetPosition(StripChartView);
-            if (position.HasValue)
-            {
-                stripChartDrawable.DragStartPixelX = (float)position.Value.X;
-                stripChartDrawable.DragCurrentPixelX = (float)position.Value.X;
-            }
-        };
-        stripChartPointer.PointerMoved += (_, e) =>
-        {
-            Point? position = e.GetPosition(StripChartView);
-            if (stripChartDrawable.DragStartPixelX.HasValue)
-            {
-                if (position.HasValue)
-                {
-                    stripChartDrawable.DragCurrentPixelX = (float)position.Value.X;
-                }
-                RefreshCharts();
-                return;
-            }
-            SetCursorTime(position.HasValue ? stripChartDrawable.PixelXToTime((float)position.Value.X) : null);
-        };
-        stripChartPointer.PointerReleased += (_, e) => FinishDragZoom(e.GetPosition(StripChartView));
-        stripChartPointer.PointerExited += (_, _) =>
-        {
-            CancelDragZoom();
-            SetCursorTime(null);
-        };
+        stripChartPointer.PointerPressed += (_, e) => OnStripChartPointerPressed(e);
+        stripChartPointer.PointerMoved += (_, e) => OnStripChartPointerMoved(e);
+        stripChartPointer.PointerReleased += (_, e) => OnStripChartPointerReleased(e);
+        stripChartPointer.PointerExited += (_, _) => OnStripChartPointerExited();
         StripChartView.GestureRecognizers.Add(stripChartPointer);
+
+        PinchGestureRecognizer stripChartPinch = new();
+        stripChartPinch.PinchUpdated += OnStripChartPinchUpdated;
+        StripChartView.GestureRecognizers.Add(stripChartPinch);
+
+        PanGestureRecognizer stripChartPan = new();
+        stripChartPan.PanUpdated += OnStripChartPanUpdated;
+        StripChartView.GestureRecognizers.Add(stripChartPan);
+
+        // tap is the only touch input that reports an absolute position on Android (touch
+        // raises no pointer events there - pointer gestures are mouse/stylus-only), so it
+        // places the cursor outright on every platform
+        TapGestureRecognizer stripChartTap = new();
+        stripChartTap.Tapped += (_, e) => OnStripChartTapped(e.GetPosition(StripChartView));
+        StripChartView.GestureRecognizers.Add(stripChartTap);
 
         StartAutoload();
     }
@@ -217,11 +233,239 @@ public partial class MainPage : ContentPage
         RefreshCharts();
         if (!string.IsNullOrWhiteSpace(warning))
         {
-            await DisplayAlertAsync("Parse Warnings", warning, "OK");
+            await DisplayAlertAsync("Parse Warnings", SummarizeWarnings(new[] { warning }), "OK");
         }
     }
 
     private const float MinDragPixels = 6;
+
+    /// <summary>
+    /// What a press on the Strip Chart is doing. Touch has no hover, so one finger (or pen)
+    /// always scrubs the cursor (TouchScrub) and zooming is a two-finger pinch instead; only
+    /// a real mouse press starts the drag-to-zoom band (MouseZoomDrag), since a mouse can't
+    /// pinch and still has hover for scrubbing.
+    /// </summary>
+    private enum StripChartGesture { None, TouchScrub, MouseZoomDrag }
+
+    private StripChartGesture stripChartGesture = StripChartGesture.None;
+
+    /// <summary>True from a pinch's Started until its Completed/Canceled - single-pointer
+    /// handlers stand down so the two pinching fingers don't also scrub the cursor.</summary>
+    private bool stripChartPinchActive;
+
+    /// <summary>Pixel X where the current touch press landed - the anchor the pan-driven
+    /// scrub offsets from, since pan events report translation, not position.</summary>
+    private float stripChartTouchStartPixelX;
+
+    // pinch-start snapshot: the visible X window and the axis value under the pinch center
+    // (as a value + its fraction across the window), so each update rescales from a stable
+    // baseline instead of compounding rounding on the live window
+    private float pinchStartWidth;
+    private float pinchAnchorAxis;
+    private float pinchAnchorFraction;
+    private float pinchTotalScale;
+
+    /// <summary>Touch and pen scrub the cursor; only a real mouse gets the drag-zoom band.
+    /// Non-Windows platforms are touch-first, so everything scrubs there.</summary>
+    private static bool IsTouchLikePointer(PointerEventArgs e)
+    {
+#if WINDOWS
+        Microsoft.UI.Xaml.Input.PointerRoutedEventArgs? platformArgs = e.PlatformArgs?.PointerRoutedEventArgs;
+        return platformArgs != null
+            && platformArgs.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse;
+#else
+        return true;
+#endif
+    }
+
+    private void OnStripChartPointerPressed(PointerEventArgs e)
+    {
+        if (stripChartPinchActive)
+        {
+            return;
+        }
+        Point? position = e.GetPosition(StripChartView);
+        if (!position.HasValue)
+        {
+            return;
+        }
+        if (IsTouchLikePointer(e))
+        {
+            // the cursor jumps to the finger immediately, so a plain tap places it too;
+            // the press pixel anchors the pan-driven scrub (see OnStripChartPanUpdated)
+            stripChartGesture = StripChartGesture.TouchScrub;
+            stripChartTouchStartPixelX = (float)position.Value.X;
+            SetCursorTime(stripChartDrawable.PixelXToTime(stripChartTouchStartPixelX));
+        }
+        else
+        {
+            stripChartGesture = StripChartGesture.MouseZoomDrag;
+            stripChartDrawable.DragStartPixelX = (float)position.Value.X;
+            stripChartDrawable.DragCurrentPixelX = (float)position.Value.X;
+        }
+    }
+
+    private void OnStripChartPointerMoved(PointerEventArgs e)
+    {
+        if (stripChartPinchActive)
+        {
+            return;
+        }
+        Point? position = e.GetPosition(StripChartView);
+        switch (stripChartGesture)
+        {
+            case StripChartGesture.MouseZoomDrag:
+                if (position.HasValue)
+                {
+                    stripChartDrawable.DragCurrentPixelX = (float)position.Value.X;
+                }
+                RefreshCharts();
+                break;
+            case StripChartGesture.TouchScrub:
+            case StripChartGesture.None:
+                // None = mouse hovering with no press - the cursor tracks the pointer
+                // either way
+                SetCursorTime(position.HasValue ? stripChartDrawable.PixelXToTime((float)position.Value.X) : null);
+                break;
+        }
+    }
+
+    private void OnStripChartPointerReleased(PointerEventArgs e)
+    {
+        if (stripChartGesture == StripChartGesture.MouseZoomDrag)
+        {
+            FinishDragZoom(e.GetPosition(StripChartView));
+        }
+        stripChartGesture = StripChartGesture.None;
+    }
+
+    private void OnStripChartPointerExited()
+    {
+        CancelDragZoom();
+        stripChartGesture = StripChartGesture.None;
+        // deliberately keeps the cursor where it was rather than clearing it: on touch,
+        // lifting the finger exits the control, and clearing here would erase the cursor
+        // the user just placed (a side effect: leaving with the mouse also freezes the
+        // cursor at its last position instead of hiding it, which keeps the readouts up)
+    }
+
+    private void OnStripChartTapped(Point? position)
+    {
+        if (stripChartPinchActive || !position.HasValue)
+        {
+            return;
+        }
+        SetCursorTime(stripChartDrawable.PixelXToTime((float)position.Value.X));
+    }
+
+    /// <summary>
+    /// One-finger drag scrub for touch, driven by the pan gesture because raw pointer-move
+    /// events aren't available during touch drags: on Windows the pinch recognizer's
+    /// manipulation mode swallows them mid-drag, and on Android touch raises no pointer
+    /// events at all. On Windows the pointer press has already anchored the scrub at the
+    /// finger (the cursor jumped there); on Android the pan itself starts the scrub,
+    /// anchored at the current cursor so a drag slides it from where it was (tap places it
+    /// outright). Mouse drags don't produce pan events, and the state checks keep this from
+    /// fighting the mouse zoom band or a pinch.
+    /// </summary>
+    private void OnStripChartPanUpdated(object? sender, PanUpdatedEventArgs e)
+    {
+        if (stripChartPinchActive || stripChartGesture == StripChartGesture.MouseZoomDrag)
+        {
+            return;
+        }
+        switch (e.StatusType)
+        {
+            case GestureStatus.Started:
+                if (stripChartGesture != StripChartGesture.TouchScrub)
+                {
+                    stripChartGesture = StripChartGesture.TouchScrub;
+                    float? anchor = stripChartDrawable.CursorTime.HasValue
+                        ? stripChartDrawable.TimeToPixelX(stripChartDrawable.CursorTime.Value)
+                        : null;
+                    stripChartTouchStartPixelX = anchor ?? (float)(StripChartView.Width / 2);
+                }
+                break;
+            case GestureStatus.Running:
+                if (stripChartGesture == StripChartGesture.TouchScrub)
+                {
+                    SetCursorTime(stripChartDrawable.PixelXToTime(stripChartTouchStartPixelX + (float)e.TotalX));
+                }
+                break;
+            case GestureStatus.Completed:
+            case GestureStatus.Canceled:
+                stripChartGesture = StripChartGesture.None;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Two-finger pinch: rescales the Strip Chart's X window around the axis value under the
+    /// pinch center - spreading zooms in, pinching zooms out, and zooming all the way out
+    /// clears the window entirely (same as Zoom All). Track Map/Traction Circle narrow to the
+    /// window's data as it changes, exactly like a drag-zoom.
+    /// </summary>
+    private void OnStripChartPinchUpdated(object? sender, PinchGestureUpdatedEventArgs e)
+    {
+        switch (e.Status)
+        {
+            case GestureStatus.Started:
+            {
+                float? dataMin = stripChartDrawable.DataMinX;
+                float? dataMax = stripChartDrawable.DataMaxX;
+                if (!dataMin.HasValue || !dataMax.HasValue)
+                {
+                    return; // nothing plotted yet
+                }
+                stripChartGesture = StripChartGesture.None;
+                CancelDragZoom();
+                float visibleMin = stripChartDrawable.ZoomMinX ?? dataMin.Value;
+                float visibleMax = stripChartDrawable.ZoomMaxX ?? dataMax.Value;
+                pinchStartWidth = Math.Max(visibleMax - visibleMin, 1e-6f);
+                float pixelX = (float)(e.ScaleOrigin.X * StripChartView.Width);
+                pinchAnchorAxis = stripChartDrawable.PixelXToTime(pixelX) ?? (visibleMin + pinchStartWidth / 2);
+                pinchAnchorFraction = (pinchAnchorAxis - visibleMin) / pinchStartWidth;
+                pinchTotalScale = 1f;
+                stripChartPinchActive = true;
+                break;
+            }
+            case GestureStatus.Running when stripChartPinchActive:
+                // e.Scale is the change since the last update, so accumulate
+                pinchTotalScale *= (float)e.Scale;
+                ApplyPinchWindow();
+                break;
+            case GestureStatus.Completed:
+            case GestureStatus.Canceled:
+                stripChartPinchActive = false;
+                break;
+        }
+    }
+
+    private void ApplyPinchWindow()
+    {
+        float? dataMin = stripChartDrawable.DataMinX;
+        float? dataMax = stripChartDrawable.DataMaxX;
+        if (!dataMin.HasValue || !dataMax.HasValue)
+        {
+            return;
+        }
+        float fullWidth = dataMax.Value - dataMin.Value;
+
+        // fingers spreading (scale > 1) shrinks the window = zoom in
+        float newWidth = pinchStartWidth / Math.Max(pinchTotalScale, 0.01f);
+        if (newWidth >= fullWidth)
+        {
+            ResetZoomToFull();
+            return;
+        }
+        newWidth = Math.Max(newWidth, fullWidth / 1000f); // cap zoom-in depth
+
+        // keep the axis value that started under the pinch center at the same relative
+        // position in the window, so the chart zooms "around the fingers"
+        float newMin = pinchAnchorAxis - pinchAnchorFraction * newWidth;
+        newMin = Math.Clamp(newMin, dataMin.Value, dataMax.Value - newWidth);
+        ApplyZoom(newMin, newMin + newWidth);
+    }
 
     /// <summary>
     /// Ends a Strip Chart drag-to-zoom gesture: too small a drag is treated as a click (no
@@ -414,8 +658,34 @@ public partial class MainPage : ContentPage
 
         if (warnings.Count > 0)
         {
-            await DisplayAlertAsync("Parse Warnings", string.Join("\n\n", warnings), "OK");
+            await DisplayAlertAsync("Parse Warnings", SummarizeWarnings(warnings), "OK");
         }
+    }
+
+    /// <summary>
+    /// Caps parse-warning text to something an alert dialog can actually lay out: a badly
+    /// mismatched file produces a warning line per record, and handing DisplayAlert
+    /// megabytes of text pinned the UI thread in layout - the app looked frozen right after
+    /// the charts drew. The full text is in the app log (see ParseFileAsync).
+    /// </summary>
+    private static string SummarizeWarnings(IReadOnlyList<string> warnings)
+    {
+        const int maxLinesPerFile = 12;
+        List<string> trimmed = new();
+        foreach (string warning in warnings)
+        {
+            string[] lines = warning.Split('\n');
+            if (lines.Length <= maxLinesPerFile)
+            {
+                trimmed.Add(warning);
+            }
+            else
+            {
+                trimmed.Add(string.Join("\n", lines.Take(maxLinesPerFile))
+                    + $"\n... and {lines.Length - maxLinesPerFile} more warning lines (see the app log)");
+            }
+        }
+        return string.Join("\n\n", trimmed);
     }
 
     /// <summary>Parses one log file into <see cref="dataLogger"/>. Returns any parse warning
@@ -434,6 +704,11 @@ public partial class MainPage : ContentPage
                 _ => throw new NotSupportedException($"Unsupported file type \"{extension}\".")
             };
             AppLogger.Log($"Opened file {filePath}");
+            if (!string.IsNullOrWhiteSpace(warning))
+            {
+                // full warning text lives here; the alert only shows a capped summary
+                AppLogger.Log($"Parse warnings for {filePath}:{Environment.NewLine}{warning}");
+            }
             return warning;
         }
         catch (Exception ex)
@@ -564,9 +839,20 @@ public partial class MainPage : ContentPage
                 group.GraphIndex = graphIndex;
             }
             group.Inverted = stripChartInvertedChannels.Contains(kv.Key);
+            if (stripChartChannelPenWidth.TryGetValue(kv.Key, out float penWidth))
+            {
+                group.PenWidth = penWidth;
+            }
+            group.Expanded = stripChartExpandedChannels.Contains(kv.Key);
             return group;
         }).ToList();
-        List<string> xAxisOptions = GetAllChannelNames();
+        // the Strip Chart's X axis only makes sense against Time or a distance channel -
+        // plotting channel-vs-channel belongs to the XY charts. Distance-GPS is excluded:
+        // only the calculated Distance channel is offered.
+        List<string> xAxisOptions = new() { StripChartDrawable.TimeAxis };
+        xAxisOptions.AddRange(GetAllChannelNames()
+            .Where(n => n.StartsWith("Distance", StringComparison.OrdinalIgnoreCase)
+                     && !n.Equals("Distance-GPS", StringComparison.OrdinalIgnoreCase)));
 
         ChannelSelectionPage page = new("Strip Chart Channels", groups, result =>
         {
@@ -585,6 +871,7 @@ public partial class MainPage : ContentPage
             foreach (SeriesGroup group in groups)
             {
                 stripChartChannelGraphIndex[group.Header] = group.GraphIndex;
+                stripChartChannelPenWidth[group.Header] = group.PenWidth;
                 if (group.Inverted)
                 {
                     stripChartInvertedChannels.Add(group.Header);
@@ -593,7 +880,16 @@ public partial class MainPage : ContentPage
                 {
                     stripChartInvertedChannels.Remove(group.Header);
                 }
-                foreach (ChannelOption option in group)
+                if (group.Expanded)
+                {
+                    stripChartExpandedChannels.Add(group.Header);
+                }
+                else
+                {
+                    stripChartExpandedChannels.Remove(group.Header);
+                }
+                // AllItems: rows hidden by a collapsed group still carry color overrides
+                foreach (ChannelOption option in group.AllItems)
                 {
                     (string channelName, string runName) = DecodeSeriesKey(option.Key);
                     if (option.Color != null)
@@ -616,7 +912,8 @@ public partial class MainPage : ContentPage
 
     private async void OnSelectTrackMapChannelsClicked(object? sender, EventArgs e)
     {
-        await SelectXYChannelsAsync("Track Map Channels", trackMapSelectedRuns, trackMapXAxis, trackMapYAxis, result =>
+        await SelectXYChannelsAsync("Track Map Channels", trackMapSelectedRuns, trackMapXAxis, trackMapYAxis,
+            trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth, result =>
         {
             trackMapCustomized = true;
             trackMapSelectedRuns.Clear();
@@ -641,7 +938,8 @@ public partial class MainPage : ContentPage
 
     private async void OnSelectTractionCircleChannelsClicked(object? sender, EventArgs e)
     {
-        await SelectXYChannelsAsync("Traction Circle Channels", tractionCircleSelectedRuns, tractionCircleXAxis, tractionCircleYAxis, result =>
+        await SelectXYChannelsAsync("Traction Circle Channels", tractionCircleSelectedRuns, tractionCircleXAxis, tractionCircleYAxis,
+            tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth, result =>
         {
             tractionCircleCustomized = true;
             tractionCircleSelectedRuns.Clear();
@@ -666,12 +964,22 @@ public partial class MainPage : ContentPage
 
     /// <summary>
     /// Channel picker for the XY charts (Track Map, Traction Circle): lets the user pick
-    /// the X and Y axis channel (defaulted to Longitude/Latitude or gX/gY) plus which runs
-    /// to include. Runs aren't filtered by channel availability up front - a run missing
+    /// the X and Y axis channel (defaulted to Longitude/Latitude or gX/gY), which runs to
+    /// include, and per-run trace overrides (invert, pen width, color - written back into
+    /// the caller's collections when Done is pressed, before onApply runs so its SaveConfig
+    /// sees them). Runs aren't filtered by channel availability up front - a run missing
     /// the chosen channels simply draws nothing, so switching axes later doesn't strand a
     /// run that was fine for the previous choice.
     /// </summary>
-    private async Task SelectXYChannelsAsync(string title, HashSet<string> currentRunSelection, string currentXAxis, string currentYAxis, Action<SeriesSelectionResult> onApply)
+    private async Task SelectXYChannelsAsync(
+        string title,
+        HashSet<string> currentRunSelection,
+        string currentXAxis,
+        string currentYAxis,
+        Dictionary<string, Color> runColors,
+        HashSet<string> invertedRuns,
+        Dictionary<string, float> runPenWidths,
+        Action<SeriesSelectionResult> onApply)
     {
         if (dataLogger.runData.Count == 0)
         {
@@ -680,12 +988,46 @@ public partial class MainPage : ContentPage
         }
 
         List<string> axisOptions = GetAllChannelNames();
-        List<ChannelOption> items = dataLogger.runData
-            .Select(r => new ChannelOption(r.runName, r.runName, currentRunSelection.Contains(r.runName)))
-            .ToList();
+        List<ChannelOption> items = dataLogger.runData.Select(r =>
+        {
+            ChannelOption option = new(r.runName, r.runName, currentRunSelection.Contains(r.runName));
+            if (runColors.TryGetValue(r.runName, out Color? color))
+            {
+                option.Color = color;
+            }
+            option.Inverted = invertedRuns.Contains(r.runName);
+            if (runPenWidths.TryGetValue(r.runName, out float penWidth))
+            {
+                option.PenWidth = penWidth;
+            }
+            return option;
+        }).ToList();
         List<SeriesGroup> groups = new() { new SeriesGroup("Runs", items) };
 
-        ChannelSelectionPage page = new(title, groups, onApply, axisOptions, currentXAxis, axisOptions, currentYAxis);
+        ChannelSelectionPage page = new(title, groups, result =>
+        {
+            foreach (ChannelOption option in items)
+            {
+                if (option.Color != null)
+                {
+                    runColors[option.Key] = option.Color;
+                }
+                else
+                {
+                    runColors.Remove(option.Key);
+                }
+                if (option.Inverted)
+                {
+                    invertedRuns.Add(option.Key);
+                }
+                else
+                {
+                    invertedRuns.Remove(option.Key);
+                }
+                runPenWidths[option.Key] = option.PenWidth;
+            }
+            onApply(result);
+        }, axisOptions, currentXAxis, axisOptions, currentYAxis, showRunControls: true);
         await Navigation.PushModalAsync(page);
     }
 
@@ -696,10 +1038,138 @@ public partial class MainPage : ContentPage
         TractionCircleView.Invalidate();
     }
 
-    private void OnZoomAllClicked(object? sender, EventArgs e)
+    private void OnZoomAllClicked(object? sender, EventArgs e) => ResetZoomToFull();
+
+    /// <summary>
+    /// Opens the manual alignment wizard: one point per run on the current Strip Chart X
+    /// axis, and the runs' Time or Distance offsets shift so the points line up. A manual
+    /// fallback for when automatic alignment gets it wrong (proper position-based
+    /// start/finish lines are a planned replacement). Each run shows its currently selected
+    /// Strip Chart channels, falling back to a default/first channel so there's always a
+    /// trace to mark against.
+    /// </summary>
+    private async void OnAlignRunsClicked(object? sender, EventArgs e)
     {
-        // clears any drag-to-zoom window (Strip Chart X range, Track Map/Traction Circle time
-        // filter) back to auto-fitting the full data range, then forces a redraw
+        if (dataLogger.runData.Count < 2)
+        {
+            await DisplayAlertAsync("Align Runs", "Load at least two runs to align.", "OK");
+            return;
+        }
+
+        bool axisIsTime = stripChartXAxis == StripChartDrawable.TimeAxis;
+        List<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> wizardRuns = new();
+        foreach (RunData run in dataLogger.runData)
+        {
+            if (!axisIsTime &&
+                (!run.channels.TryGetValue(stripChartXAxis, out DataChannel? axisData) || axisData.DataPoints.Count == 0))
+            {
+                continue; // can't distance-align a run that has no distance data
+            }
+            HashSet<(string RunName, string ChannelName)> series = stripChartSelection
+                .Where(s => s.RunName == run.runName && run.channels.ContainsKey(s.ChannelName))
+                .ToHashSet();
+            if (series.Count == 0)
+            {
+                string? fallback = stripChartDefaultChannelNames.FirstOrDefault(n => run.channels.ContainsKey(n))
+                    ?? run.channels.Keys.FirstOrDefault(n => !NonSelectableChannels.Contains(n));
+                if (fallback == null)
+                {
+                    continue;
+                }
+                series.Add((run.runName, fallback));
+            }
+            wizardRuns.Add((run, series));
+        }
+        if (wizardRuns.Count < 2)
+        {
+            await DisplayAlertAsync("Align Runs", $"Need at least two runs with {stripChartXAxis} data to align.", "OK");
+            return;
+        }
+
+        AlignmentWizardPage page = new(dataLogger, stripChartXAxis, wizardRuns, onFinished: () =>
+        {
+            // the offsets just changed, so a Delta-T built from the old offsets is stale
+            RecomputeDeltaTime();
+            RefreshCharts();
+        });
+        await Navigation.PushModalAsync(page);
+    }
+
+    // base run of the most recent Delta-T computation, so anything that changes the
+    // alignment offsets Delta-T was built from can recompute it automatically
+    private string? deltaTimeBaseRunName;
+
+    private void RecomputeDeltaTime()
+    {
+        if (deltaTimeBaseRunName != null && dataLogger.runData.Any(r => r.runName == deltaTimeBaseRunName))
+        {
+            DeltaTime.Compute(dataLogger, deltaTimeBaseRunName);
+        }
+    }
+
+    /// <summary>
+    /// Computes the calculated Delta-T channel (time gained/lost versus a base run at the
+    /// same distance, like the WinForms app's delta time) after asking which run is the
+    /// base. The channel lands in every run with distance data - including the base run,
+    /// whose flat zero trace is the reference line - and is auto-selected onto the Strip
+    /// Chart in its own subgraph band.
+    /// </summary>
+    private async void OnDeltaTimeClicked(object? sender, EventArgs e)
+    {
+        if (dataLogger.runData.Count < 2)
+        {
+            await DisplayAlertAsync("Delta Time", "Load at least two runs to compare.", "OK");
+            return;
+        }
+        string[] runNames = dataLogger.runData.Select(r => r.runName).ToArray();
+        string choice = await DisplayActionSheetAsync("Delta Time - pick the base run", "Cancel", null, runNames);
+        if (string.IsNullOrEmpty(choice) || choice == "Cancel")
+        {
+            return;
+        }
+
+        string? warning = DeltaTime.Compute(dataLogger, choice);
+        deltaTimeBaseRunName = choice;
+
+        // show the result immediately: select Delta-T for every run that got it, stacked
+        // into its own subgraph band (seconds gained/lost shouldn't share a Y scale with
+        // RPM or G-force)
+        if (!stripChartChannelGraphIndex.ContainsKey(DeltaTime.ChannelName))
+        {
+            int nextBand = 0;
+            foreach ((string RunName, string ChannelName) selected in stripChartSelection)
+            {
+                int band = stripChartChannelGraphIndex.TryGetValue(selected.ChannelName, out int g) ? g : 0;
+                nextBand = Math.Max(nextBand, band + 1);
+            }
+            stripChartChannelGraphIndex[DeltaTime.ChannelName] = Math.Min(nextBand, 7);
+        }
+        foreach (RunData run in dataLogger.runData)
+        {
+            if (run.channels.ContainsKey(DeltaTime.ChannelName))
+            {
+                stripChartSelection.Add((run.runName, DeltaTime.ChannelName));
+            }
+        }
+        stripChartCustomized = true;
+        stripChartDefaultChannelNames = stripChartSelection.Select(s => s.ChannelName).ToHashSet();
+        UpdateCursorEligibleRuns();
+        SaveConfig();
+        RefreshCharts();
+
+        if (warning != null)
+        {
+            await DisplayAlertAsync("Delta Time", warning, "OK");
+        }
+    }
+
+    /// <summary>
+    /// Clears any zoom window (Strip Chart X range, Track Map/Traction Circle time filter)
+    /// back to auto-fitting the full data range, then forces a redraw. Reached via the
+    /// Zoom All button or by pinching all the way back out.
+    /// </summary>
+    private void ResetZoomToFull()
+    {
         stripChartDrawable.ZoomMinX = null;
         stripChartDrawable.ZoomMaxX = null;
         trackMapDrawable.TimeRangeFilter = null;
@@ -737,6 +1207,14 @@ public partial class MainPage : ContentPage
                 RefreshCharts();
             });
         await Navigation.PushModalAsync(page);
+    }
+
+    private async void OnAboutClicked(object? sender, EventArgs e)
+    {
+        await DisplayAlertAsync(
+            "About YamuraView",
+            $"YamuraView\nVersion {AppVersion.Number} ({AppVersion.Status})",
+            "OK");
     }
 
     /// <summary>
@@ -788,6 +1266,8 @@ public partial class MainPage : ContentPage
                 stripChartChannelGraphIndex.Clear();
                 stripChartChannelColorOverride.Clear();
                 stripChartInvertedChannels.Clear();
+                stripChartChannelPenWidth.Clear();
+                stripChartExpandedChannels.Clear();
                 foreach (XElement channelElement in stripChart.Elements("Channel"))
                 {
                     string? name = (string?)channelElement.Attribute("Name");
@@ -802,6 +1282,14 @@ public partial class MainPage : ContentPage
                     if (bool.TryParse((string?)channelElement.Attribute("Invert"), out bool inverted) && inverted)
                     {
                         stripChartInvertedChannels.Add(name);
+                    }
+                    if (float.TryParse((string?)channelElement.Attribute("PenWidth"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float penWidth))
+                    {
+                        stripChartChannelPenWidth[name] = penWidth;
+                    }
+                    if (bool.TryParse((string?)channelElement.Attribute("Expanded"), out bool expanded) && expanded)
+                    {
+                        stripChartExpandedChannels.Add(name);
                     }
                     foreach (XElement runColorElement in channelElement.Elements("RunColor"))
                     {
@@ -824,6 +1312,7 @@ public partial class MainPage : ContentPage
                 {
                     trackMapDisplayMode = trackMapDisplay;
                 }
+                LoadRunSettings(trackMap, trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth);
             }
 
             XElement? tractionCircle = root.Element("TractionCircle");
@@ -835,6 +1324,7 @@ public partial class MainPage : ContentPage
                 {
                     tractionCircleDisplayMode = tractionCircleDisplay;
                 }
+                LoadRunSettings(tractionCircle, tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth);
             }
         }
         catch (Exception ex)
@@ -869,6 +1359,8 @@ public partial class MainPage : ContentPage
                             new XAttribute("Name", n),
                             new XAttribute("Graph", stripChartChannelGraphIndex.TryGetValue(n, out int g) ? g : 0),
                             new XAttribute("Invert", stripChartInvertedChannels.Contains(n)),
+                            new XAttribute("PenWidth", stripChartChannelPenWidth.TryGetValue(n, out float w) ? w : StripChartDrawable.DefaultPenWidth),
+                            new XAttribute("Expanded", stripChartExpandedChannels.Contains(n)),
                             stripChartChannelColorOverride
                                 .Where(kv => kv.Key.ChannelName == n)
                                 .Select(kv => new XElement("RunColor",
@@ -877,11 +1369,13 @@ public partial class MainPage : ContentPage
                     new XElement("TrackMap",
                         new XAttribute("XAxis", trackMapXAxis),
                         new XAttribute("YAxis", trackMapYAxis),
-                        new XAttribute("DisplayMode", trackMapDisplayMode.ToString())),
+                        new XAttribute("DisplayMode", trackMapDisplayMode.ToString()),
+                        BuildRunSettingElements(trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth)),
                     new XElement("TractionCircle",
                         new XAttribute("XAxis", tractionCircleXAxis),
                         new XAttribute("YAxis", tractionCircleYAxis),
-                        new XAttribute("DisplayMode", tractionCircleDisplayMode.ToString()))));
+                        new XAttribute("DisplayMode", tractionCircleDisplayMode.ToString()),
+                        BuildRunSettingElements(tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth))));
 
             string? dir = Path.GetDirectoryName(settings.ConfigFilePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -894,6 +1388,66 @@ public partial class MainPage : ContentPage
         catch (Exception ex)
         {
             AppLogger.Log($"Failed to save config {settings.ConfigFilePath}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// One config Run element per run that has any non-default trace override (color,
+    /// invert, or pen width) on an XY chart - runs with all defaults aren't saved, since
+    /// absent means default on load.
+    /// </summary>
+    private static IEnumerable<XElement> BuildRunSettingElements(
+        Dictionary<string, Color> runColors, HashSet<string> invertedRuns, Dictionary<string, float> runPenWidths)
+    {
+        SortedSet<string> names = new(runColors.Keys);
+        names.UnionWith(invertedRuns);
+        foreach ((string name, float width) in runPenWidths)
+        {
+            if (width != StripChartDrawable.DefaultPenWidth)
+            {
+                names.Add(name);
+            }
+        }
+        foreach (string name in names)
+        {
+            XElement element = new("Run", new XAttribute("Name", name));
+            if (runColors.TryGetValue(name, out Color? color))
+            {
+                element.Add(new XAttribute("Color", color.ToHex()));
+            }
+            element.Add(new XAttribute("Invert", invertedRuns.Contains(name)));
+            element.Add(new XAttribute("PenWidth",
+                runPenWidths.TryGetValue(name, out float width) ? width : StripChartDrawable.DefaultPenWidth));
+            yield return element;
+        }
+    }
+
+    private static void LoadRunSettings(
+        XElement chartElement, Dictionary<string, Color> runColors, HashSet<string> invertedRuns, Dictionary<string, float> runPenWidths)
+    {
+        runColors.Clear();
+        invertedRuns.Clear();
+        runPenWidths.Clear();
+        foreach (XElement runElement in chartElement.Elements("Run"))
+        {
+            string? name = (string?)runElement.Attribute("Name");
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+            string? colorHex = (string?)runElement.Attribute("Color");
+            if (!string.IsNullOrEmpty(colorHex))
+            {
+                runColors[name] = Color.Parse(colorHex);
+            }
+            if (bool.TryParse((string?)runElement.Attribute("Invert"), out bool inverted) && inverted)
+            {
+                invertedRuns.Add(name);
+            }
+            if (float.TryParse((string?)runElement.Attribute("PenWidth"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float penWidth))
+            {
+                runPenWidths[name] = penWidth;
+            }
         }
     }
 }

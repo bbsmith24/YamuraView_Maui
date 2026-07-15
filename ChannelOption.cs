@@ -12,9 +12,15 @@ public class ChannelOption : INotifyPropertyChanged
 {
     private bool isSelected;
     private Color? color;
+    private bool inverted;
+    private float penWidth = StripChartDrawable.DefaultPenWidth;
 
     public string Key { get; }
     public string Name { get; }
+
+    /// <summary>Row text with an " (inv)" suffix while inverted, mirroring the group
+    /// header's convention.</summary>
+    public string DisplayName => inverted ? Name + " (inv)" : Name;
 
     public bool IsSelected
     {
@@ -47,6 +53,42 @@ public class ChannelOption : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Flips this row's trace vertically - used by the XY charts, where a row is a whole
+    /// run, so invert is naturally per row (the Strip Chart inverts per channel name via
+    /// <see cref="SeriesGroup.Inverted"/> instead).
+    /// </summary>
+    public bool Inverted
+    {
+        get => inverted;
+        set
+        {
+            if (inverted != value)
+            {
+                inverted = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Inverted)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayName)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Trace pen width (point radius in point mode) for this row - used by the XY charts,
+    /// per run for the same reason as <see cref="Inverted"/>.
+    /// </summary>
+    public float PenWidth
+    {
+        get => penWidth;
+        set
+        {
+            if (penWidth != value)
+            {
+                penWidth = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PenWidth)));
+            }
+        }
+    }
+
     public ChannelOption(string key, string name, bool isSelected)
     {
         Key = key;
@@ -58,18 +100,47 @@ public class ChannelOption : INotifyPropertyChanged
 }
 
 /// <summary>
-/// A header (e.g. a channel name) plus its selectable rows (e.g. one per run) for a
-/// grouped CollectionView - mirrors the WinForms tri-state tree's parent/child shape
-/// (parent = channel name, children = "channel (run)").
+/// A header (e.g. a channel name) plus its selectable rows (e.g. one per run) - mirrors the
+/// WinForms tri-state tree's parent/child shape (parent = channel name, children =
+/// "channel (run)"). The hosting page flattens groups and rows into a single list (grouped
+/// CollectionViews misbehave on Windows), so <see cref="Expanded"/> is just a flag - the
+/// page inserts or removes this group's rows when it toggles, and the rows themselves
+/// (selection, color) are never touched by a collapse.
 /// </summary>
 public class SeriesGroup : List<ChannelOption>, INotifyPropertyChanged
 {
     private int graphIndex;
+    private float penWidth = StripChartDrawable.DefaultPenWidth;
     private bool inverted;
     private bool groupChecked;
     private bool suppressGroupCheckedCascade;
+    private bool expanded = true;
 
     public string Header { get; }
+
+    /// <summary>Every row in the group, whether or not its group is currently expanded in
+    /// the dialog - kept so result-reading callers make it explicit they include rows a
+    /// collapse has hidden.</summary>
+    public IReadOnlyList<ChannelOption> AllItems => this;
+
+    /// <summary>Whether the group's rows are shown (mirrors the WinForms tree's
+    /// expand/collapse). Only a flag - the hosting page shows/hides the rows.</summary>
+    public bool Expanded
+    {
+        get => expanded;
+        set
+        {
+            if (expanded != value)
+            {
+                expanded = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Expanded)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ExpandGlyph)));
+            }
+        }
+    }
+
+    /// <summary>Expander indicator shown in the group header: ▼ expanded, ▶ collapsed.</summary>
+    public string ExpandGlyph => expanded ? "▼" : "▶";
 
     /// <summary>Header text with an " (inv)" suffix while inverted, mirroring the WinForms
     /// tree's display convention for an inverted channel.</summary>
@@ -90,6 +161,24 @@ public class SeriesGroup : List<ChannelOption>, INotifyPropertyChanged
             {
                 graphIndex = value;
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(GraphIndex)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Trace pen width (in pixels) for this channel name - applies to every run's instance
+    /// of the channel at once, like <see cref="Inverted"/>. In point display mode it sets
+    /// the point radius instead.
+    /// </summary>
+    public float PenWidth
+    {
+        get => penWidth;
+        set
+        {
+            if (penWidth != value)
+            {
+                penWidth = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PenWidth)));
             }
         }
     }

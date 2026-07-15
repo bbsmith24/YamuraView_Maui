@@ -1,8 +1,136 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:local="clr-namespace:YamuraView"
              x:Class="YamuraView.ChannelSelectionPage"
              x:Name="ThisPage">
+
+    <ContentPage.Resources>
+        <!-- The list is deliberately flat (headers and rows interleaved in Rows, dispatched
+             by type via the selector below) rather than a grouped CollectionView: on Windows,
+             grouped CollectionViews don't reliably show rows added to an initially-empty
+             (collapsed) group, and break scrolling with many groups. -->
+        <DataTemplate x:Key="GroupHeaderTemplate">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto"
+                  Margin="0,10,0,2"
+                  BackgroundColor="{AppThemeBinding Light=#F0F0F0, Dark=#222222}"
+                  Padding="6,4"
+                  ColumnSpacing="4">
+                <Button Grid.Column="0"
+                        Text="{Binding ExpandGlyph}"
+                        FontSize="12"
+                        BackgroundColor="Transparent"
+                        TextColor="{AppThemeBinding Light=Black, Dark=White}"
+                        BorderWidth="0"
+                        Padding="0"
+                        WidthRequest="28"
+                        HeightRequest="28"
+                        VerticalOptions="Center"
+                        Clicked="OnToggleGroupExpandClicked" />
+                <CheckBox Grid.Column="1"
+                          IsChecked="{Binding GroupChecked}"
+                          VerticalOptions="Center"
+                          IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
+                <Label Grid.Column="2"
+                       Text="{Binding DisplayHeader}"
+                       FontAttributes="Bold"
+                       FontSize="15"
+                       VerticalOptions="Center" />
+                <Label Grid.Column="3"
+                       Text="Invert"
+                       VerticalOptions="Center"
+                       Margin="0,0,4,0"
+                       IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
+                <CheckBox Grid.Column="4"
+                          IsChecked="{Binding Inverted}"
+                          VerticalOptions="Center"
+                          IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
+                <Label Grid.Column="5"
+                       Text="Graph"
+                       VerticalOptions="Center"
+                       Margin="8,0,4,0"
+                       IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
+                <HorizontalStackLayout Grid.Column="6"
+                                        Spacing="0"
+                                        IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}">
+                    <Stepper Minimum="0"
+                             Maximum="7"
+                             Increment="1"
+                             Value="{Binding GraphIndex}"
+                             VerticalOptions="Center" />
+                    <Label Text="{Binding GraphIndex, StringFormat='{0:0}'}"
+                           VerticalOptions="Center"
+                           WidthRequest="16"
+                           HorizontalTextAlignment="Center" />
+                </HorizontalStackLayout>
+                <Label Grid.Column="7"
+                       Text="Width"
+                       VerticalOptions="Center"
+                       Margin="8,0,4,0"
+                       IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
+                <HorizontalStackLayout Grid.Column="8"
+                                        Spacing="0"
+                                        IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}">
+                    <Stepper Minimum="0.5"
+                             Maximum="5"
+                             Increment="0.5"
+                             Value="{Binding PenWidth}"
+                             VerticalOptions="Center" />
+                    <Label Text="{Binding PenWidth, StringFormat='{0:0.0}'}"
+                           VerticalOptions="Center"
+                           WidthRequest="24"
+                           HorizontalTextAlignment="Center" />
+                </HorizontalStackLayout>
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="ChannelRowTemplate">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto" Padding="16,4,0,4" ColumnSpacing="4">
+                <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" />
+                <Label Grid.Column="1" Text="{Binding DisplayName}" VerticalOptions="Center" FontSize="16" />
+                <Label Grid.Column="2"
+                       Text="Invert"
+                       VerticalOptions="Center"
+                       Margin="0,0,4,0"
+                       IsVisible="{Binding BindingContext.ShowRunControls, Source={x:Reference ThisPage}}" />
+                <CheckBox Grid.Column="3"
+                          IsChecked="{Binding Inverted}"
+                          VerticalOptions="Center"
+                          IsVisible="{Binding BindingContext.ShowRunControls, Source={x:Reference ThisPage}}" />
+                <Label Grid.Column="4"
+                       Text="Width"
+                       VerticalOptions="Center"
+                       Margin="8,0,4,0"
+                       IsVisible="{Binding BindingContext.ShowRunControls, Source={x:Reference ThisPage}}" />
+                <HorizontalStackLayout Grid.Column="5"
+                                        Spacing="0"
+                                        IsVisible="{Binding BindingContext.ShowRunControls, Source={x:Reference ThisPage}}">
+                    <Stepper Minimum="0.5"
+                             Maximum="5"
+                             Increment="0.5"
+                             Value="{Binding PenWidth}"
+                             VerticalOptions="Center" />
+                    <Label Text="{Binding PenWidth, StringFormat='{0:0.0}'}"
+                           VerticalOptions="Center"
+                           WidthRequest="24"
+                           HorizontalTextAlignment="Center" />
+                </HorizontalStackLayout>
+                <Button Grid.Column="6"
+                        Text=" "
+                        BackgroundColor="{Binding Color}"
+                        BorderColor="Gray"
+                        BorderWidth="1"
+                        WidthRequest="26"
+                        HeightRequest="26"
+                        Padding="0"
+                        Margin="4,0,0,0"
+                        Clicked="OnChannelColorClicked"
+                        IsVisible="{Binding BindingContext.ShowRowColor, Source={x:Reference ThisPage}}" />
+            </Grid>
+        </DataTemplate>
+        <local:ChannelRowTemplateSelector x:Key="RowTemplateSelector"
+                                          GroupTemplate="{StaticResource GroupHeaderTemplate}"
+                                          ItemTemplate="{StaticResource ChannelRowTemplate}" />
+    </ContentPage.Resources>
 
     <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="12" RowSpacing="12">
 
@@ -18,72 +146,8 @@
 
         <CollectionView Grid.Row="2"
                          x:Name="ChannelsView"
-                         ItemsSource="{Binding Groups}"
-                         IsGrouped="True">
-            <CollectionView.GroupHeaderTemplate>
-                <DataTemplate>
-                    <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto"
-                          Margin="0,10,0,2"
-                          BackgroundColor="{AppThemeBinding Light=#F0F0F0, Dark=#222222}"
-                          Padding="6,4"
-                          ColumnSpacing="4">
-                        <CheckBox Grid.Column="0"
-                                  IsChecked="{Binding GroupChecked}"
-                                  VerticalOptions="Center"
-                                  IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
-                        <Label Grid.Column="1"
-                               Text="{Binding DisplayHeader}"
-                               FontAttributes="Bold"
-                               FontSize="15"
-                               VerticalOptions="Center" />
-                        <Label Grid.Column="2"
-                               Text="Invert"
-                               VerticalOptions="Center"
-                               Margin="0,0,4,0"
-                               IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
-                        <CheckBox Grid.Column="3"
-                                  IsChecked="{Binding Inverted}"
-                                  VerticalOptions="Center"
-                                  IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
-                        <Label Grid.Column="4"
-                               Text="Graph"
-                               VerticalOptions="Center"
-                               Margin="8,0,4,0"
-                               IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
-                        <HorizontalStackLayout Grid.Column="5"
-                                                Spacing="0"
-                                                IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}">
-                            <Stepper Minimum="0"
-                                     Maximum="7"
-                                     Increment="1"
-                                     Value="{Binding GraphIndex}"
-                                     VerticalOptions="Center" />
-                            <Label Text="{Binding GraphIndex, StringFormat='{0:0}'}"
-                                   VerticalOptions="Center"
-                                   WidthRequest="16"
-                                   HorizontalTextAlignment="Center" />
-                        </HorizontalStackLayout>
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.GroupHeaderTemplate>
-            <CollectionView.ItemTemplate>
-                <DataTemplate>
-                    <Grid ColumnDefinitions="Auto,*,Auto" Padding="16,4,0,4" ColumnSpacing="8">
-                        <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" />
-                        <Label Grid.Column="1" Text="{Binding Name}" VerticalOptions="Center" FontSize="16" />
-                        <Button Grid.Column="2"
-                                Text=" "
-                                BackgroundColor="{Binding Color}"
-                                BorderColor="Gray"
-                                BorderWidth="1"
-                                WidthRequest="26"
-                                HeightRequest="26"
-                                Padding="0"
-                                Clicked="OnChannelColorClicked"
-                                IsVisible="{Binding BindingContext.ShowChannelGroupControls, Source={x:Reference ThisPage}}" />
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
+                         ItemsSource="{Binding Rows}"
+                         ItemTemplate="{StaticResource RowTemplateSelector}">
             <CollectionView.EmptyView>
                 <Label Text="Nothing available yet."
                        TextColor="Gray"
