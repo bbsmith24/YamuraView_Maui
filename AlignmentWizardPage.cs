@@ -3,13 +3,13 @@ using YamuraView.Core;
 namespace YamuraView;
 
 /// <summary>
-/// Manual run-alignment wizard: steps through each loaded run so the user can mark one
-/// point (the same physical event - a braking spike, corner entry, etc.) per run on the
-/// current Strip Chart X axis, then shifts each run's Time or Distance offset so the marks
-/// line up with the first run's mark. A fallback for when the automatic time/distance
-/// alignment isn't right; position-based start/finish lines are planned to replace it.
-/// Every run's mark starts at the same display value, so a run the user never adjusts
-/// contributes a zero shift and keeps its current alignment.
+/// Start-position wizard: the user marks the start position on the first loaded run (on
+/// the given X axis - Time or a distance channel). Finishing records the mark's GPS
+/// location and aligned time/distance as the DataLogger's start position
+/// (<see cref="RunAlignment.SetStartPosition"/>); every run loaded afterward is aligned to
+/// it automatically, so this page is normally shown with just that one reference run. If
+/// given several runs it steps through them, shifting each run's offsets so its mark lands
+/// on the first run's - the first run's mark still defines the stored start position.
 /// </summary>
 public class AlignmentWizardPage : ContentPage
 {
@@ -82,7 +82,11 @@ public class AlignmentWizardPage : ContentPage
             }
             else
             {
-                ApplyOffsets();
+                string? warning = ApplyOffsets();
+                if (warning != null)
+                {
+                    await DisplayAlertAsync("Align Runs", warning, "OK");
+                }
                 this.onFinished();
                 await Navigation.PopModalAsync();
             }
@@ -146,12 +150,16 @@ public class AlignmentWizardPage : ContentPage
         pan.PanUpdated += OnPanUpdated;
         chartView.GestureRecognizers.Add(pan);
 
+        string modeText = runs.Count == 1
+            ? "Tap or drag to mark the start position of this run, then Finish. Runs loaded "
+                + "later are aligned to this position automatically (nearest GPS point)."
+            : "Tap or drag to mark the same start position in every run, then Finish to line "
+                + "the marks up on the first run's mark.";
         Label instructions = new()
         {
-            Text = "Tap or drag to mark the same event (braking point, corner entry, ...) in every run, "
-                + "then Finish to line the marks up. Zoom in with + for precision (the view stays "
-                + "centered on the mark) and use ◀ ▶ to fine-tune one sample at a time. "
-                + "Runs you don't adjust keep their current alignment.",
+            Text = modeText
+                + " Zoom in with + for precision (the view stays centered on the mark) and use "
+                + "◀ ▶ to fine-tune one sample at a time. Runs you don't adjust keep their current alignment.",
             FontSize = 13
         };
 
@@ -397,9 +405,12 @@ public class AlignmentWizardPage : ContentPage
         return lo;
     }
 
-    /// <summary>Shifts each run's offset so its mark lands on the first run's mark. Marks
-    /// are in display space, so the current offset is simply adjusted by the difference.</summary>
-    private void ApplyOffsets()
+    /// <summary>Shifts each run's offset so its mark lands on the first run's mark (a
+    /// single-run wizard shifts nothing), then records the first run's mark as the stored
+    /// start position that later-loaded runs are auto-aligned to. Marks are in display
+    /// space, so the current offset is simply adjusted by the difference. Returns a warning
+    /// if the start position couldn't be fully captured (e.g. no GPS data), else null.</summary>
+    private string? ApplyOffsets()
     {
         float reference = chosenValues[0];
         for (int i = 0; i < runs.Count; i++)
@@ -414,11 +425,8 @@ public class AlignmentWizardPage : ContentPage
                 runs[i].Run.DistanceOffset += delta;
             }
         }
-        if (!axisIsTime)
-        {
-            // the reference mark is the new distance align point (all marks now sit on it
-            // in aligned space) - Delta-T only computes from here on
-            dataLogger.DistanceAlignPoint = reference;
-        }
+        // capture the mark's GPS location and aligned time/distance (also refreshes the
+        // distance align point Delta-T computes from)
+        return RunAlignment.SetStartPosition(dataLogger, runs[0].Run, axisChannel, axisIsTime, reference);
     }
 }

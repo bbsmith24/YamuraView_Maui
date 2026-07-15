@@ -116,7 +116,7 @@
                 </HorizontalStackLayout>
                 <Button Grid.Column="6"
                         Text=" "
-                        BackgroundColor="{Binding Color}"
+                        BackgroundColor="{Binding DisplayColor}"
                         BorderColor="Gray"
                         BorderWidth="1"
                         WidthRequest="26"

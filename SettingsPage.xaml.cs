@@ -3,7 +3,9 @@ namespace YamuraView;
 public partial class SettingsPage : ContentPage
 {
     private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode> onSave;
+    private readonly Action<IReadOnlyList<string>> onRemoveRuns;
     private readonly List<Button> swatchButtons = new();
+    private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
 
     public SettingsPage(
         string configFilePath,
@@ -12,10 +14,13 @@ public partial class SettingsPage : ContentPage
         ChartDisplayMode stripChartDisplayMode,
         ChartDisplayMode trackMapDisplayMode,
         ChartDisplayMode tractionCircleDisplayMode,
-        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode> onSave)
+        IReadOnlyList<string> runNames,
+        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode> onSave,
+        Action<IReadOnlyList<string>> onRemoveRuns)
     {
         InitializeComponent();
         this.onSave = onSave;
+        this.onRemoveRuns = onRemoveRuns;
         ConfigPathEntry.Text = configFilePath;
         AutoloadFolderEntry.Text = autoloadFolderPath;
         StripChartDisplayModePicker.SelectedIndex = stripChartDisplayMode == ChartDisplayMode.Point ? 1 : 0;
@@ -40,6 +45,25 @@ public partial class SettingsPage : ContentPage
             };
             swatchButtons.Add(swatch);
             ColorSwatchLayout.Children.Add(swatch);
+        }
+
+        if (runNames.Count == 0)
+        {
+            RunRemovalLayout.Children.Add(new Label { Text = "(no runs loaded)", FontSize = 12 });
+        }
+        foreach (string runName in runNames)
+        {
+            CheckBox box = new() { VerticalOptions = LayoutOptions.Center };
+            Label label = new() { Text = runName, VerticalOptions = LayoutOptions.Center };
+            // tapping the name toggles too - the bare checkbox is a small touch target
+            TapGestureRecognizer tap = new();
+            tap.Tapped += (_, _) => box.IsChecked = !box.IsChecked;
+            label.GestureRecognizers.Add(tap);
+            HorizontalStackLayout row = new() { Spacing = 4 };
+            row.Add(box);
+            row.Add(label);
+            runRemovalChecks.Add((box, runName));
+            RunRemovalLayout.Children.Add(row);
         }
     }
 
@@ -115,6 +139,22 @@ public partial class SettingsPage : ContentPage
         ChartDisplayMode stripChartDisplayMode = StripChartDisplayModePicker.SelectedIndex == 1 ? ChartDisplayMode.Point : ChartDisplayMode.Line;
         ChartDisplayMode trackMapDisplayMode = TrackMapDisplayModePicker.SelectedIndex == 1 ? ChartDisplayMode.Point : ChartDisplayMode.Line;
         ChartDisplayMode tractionCircleDisplayMode = TractionCircleDisplayModePicker.SelectedIndex == 1 ? ChartDisplayMode.Point : ChartDisplayMode.Line;
+
+        List<string> runsToRemove = runRemovalChecks.Where(c => c.Box.IsChecked).Select(c => c.RunName).ToList();
+        if (runsToRemove.Count > 0)
+        {
+            bool confirmed = await DisplayAlertAsync(
+                "Remove Runs",
+                $"Remove {runsToRemove.Count} run(s)?\n{string.Join("\n", runsToRemove)}\n\nReload the log file to get a run back.",
+                "Remove", "Cancel");
+            if (!confirmed)
+            {
+                return;
+            }
+            // remove before onSave so the config it writes reflects the surviving runs
+            onRemoveRuns(runsToRemove);
+        }
+
         onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode);
         await Navigation.PopModalAsync();
     }

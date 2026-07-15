@@ -52,6 +52,10 @@
                 </Picker>
             </Grid>
 
+            <Label Text="Remove Runs" FontAttributes="Bold" />
+            <Label Text="Check the runs to remove - they're unloaded when you Save (reload the log file to get one back)." FontSize="12" />
+            <VerticalStackLayout x:Name="RunRemovalLayout" Spacing="4" />
+
             <Label Text="Log" FontAttributes="Bold" />
             <Button Text="View Log" Clicked="OnViewLogClicked" HorizontalOptions="Start" />
 

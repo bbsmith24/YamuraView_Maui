@@ -49,9 +49,19 @@ public class ChannelOption : INotifyPropertyChanged
             {
                 color = value;
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Color)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayColor)));
             }
         }
     }
+
+    /// <summary>The run's auto-assigned palette color - what the trace draws with when no
+    /// override is set. Supplied by the picker builder so the row swatch can show the
+    /// current effective color instead of sitting blank until an override exists.</summary>
+    public Color? AutoColor { get; set; }
+
+    /// <summary>Effective trace color for the row's swatch: the override when set, the
+    /// auto-assigned color otherwise.</summary>
+    public Color? DisplayColor => color ?? AutoColor;
 
     /// <summary>
     /// Flips this row's trace vertically - used by the XY charts, where a row is a whole

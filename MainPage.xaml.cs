@@ -68,9 +68,9 @@ public partial class MainPage : ContentPage
     private ChartDisplayMode trackMapDisplayMode = ChartDisplayMode.Line;
     private ChartDisplayMode tractionCircleDisplayMode = ChartDisplayMode.Line;
 
-    private bool stripChartCustomized;
-    private bool trackMapCustomized;
-    private bool tractionCircleCustomized;
+    // runs that have already been given their one-time default selections - loading more
+    // files must never change checkboxes for runs that are already in this set
+    private readonly HashSet<string> selectionInitializedRuns = new();
 
     // full paths already seen in the autoload folder - seeded with whatever's already there
     // when autoload (re)starts, so only files that show up afterward get auto-loaded, matching
@@ -214,6 +214,9 @@ public partial class MainPage : ContentPage
         if (newFile == null)
         {
             AppLogger.Log($"Autoload: checked {settings.AutoloadFolderPath}, no new files found");
+            // catch up on runs whose auto-align was deferred because the start-position
+            // wizard was open (no wizard re-offer - the user isn't mid-action here)
+            await AlignNewRunsAsync(offerWizard: false);
             return;
         }
 
@@ -230,11 +233,15 @@ public partial class MainPage : ContentPage
         autoloadKnownFiles.Add(newFile);
         string? warning = await ParseFileAsync(newFile);
         RefreshSelectionDefaults();
+        // an in-use Delta-T extends to the just-loaded run (recomputed again after it's
+        // aligned, but this covers loads where alignment doesn't run)
+        RecomputeDeltaTime();
         RefreshCharts();
         if (!string.IsNullOrWhiteSpace(warning))
         {
             await DisplayAlertAsync("Parse Warnings", SummarizeWarnings(new[] { warning }), "OK");
         }
+        await AlignNewRunsAsync();
     }
 
     private const float MinDragPixels = 6;
@@ -295,7 +302,7 @@ public partial class MainPage : ContentPage
             // the press pixel anchors the pan-driven scrub (see OnStripChartPanUpdated)
             stripChartGesture = StripChartGesture.TouchScrub;
             stripChartTouchStartPixelX = (float)position.Value.X;
-            SetCursorTime(stripChartDrawable.PixelXToTime(stripChartTouchStartPixelX));
+            SetCursorTime(stripChartDrawable.PixelXToTime(stripChartTouchStartPixelX), (float)position.Value.Y);
         }
         else
         {
@@ -325,7 +332,9 @@ public partial class MainPage : ContentPage
             case StripChartGesture.None:
                 // None = mouse hovering with no press - the cursor tracks the pointer
                 // either way
-                SetCursorTime(position.HasValue ? stripChartDrawable.PixelXToTime((float)position.Value.X) : null);
+                SetCursorTime(
+                    position.HasValue ? stripChartDrawable.PixelXToTime((float)position.Value.X) : null,
+                    position.HasValue ? (float)position.Value.Y : null);
                 break;
         }
     }
@@ -355,7 +364,7 @@ public partial class MainPage : ContentPage
         {
             return;
         }
-        SetCursorTime(stripChartDrawable.PixelXToTime((float)position.Value.X));
+        SetCursorTime(stripChartDrawable.PixelXToTime((float)position.Value.X), (float)position.Value.Y);
     }
 
     /// <summary>
@@ -598,8 +607,15 @@ public partial class MainPage : ContentPage
     /// (e.g. a distance) can't be handed to them directly - it always has to be converted
     /// to the nearest actual timestamp first.
     /// </summary>
-    private void SetCursorTime(float? axisValue)
+    private void SetCursorTime(float? axisValue, float? pixelY = null)
     {
+        // remember where the pointer is vertically so the readout can dodge it (drawn at
+        // the opposite half of the plot); a null keeps the last known position - touch
+        // scrubs drive this from pan events, which don't report an absolute Y
+        if (pixelY.HasValue)
+        {
+            stripChartDrawable.CursorPixelY = pixelY;
+        }
         stripChartDrawable.CursorTime = axisValue;
         float? rawTime = axisValue.HasValue ? stripChartDrawable.ConvertToTime(axisValue.Value) : null;
         trackMapDrawable.CursorTime = rawTime;
@@ -653,12 +669,22 @@ public partial class MainPage : ContentPage
         if (filePaths.Count > 0)
         {
             RefreshSelectionDefaults();
+            // an in-use Delta-T extends to the just-loaded runs (recomputed again after
+            // they're aligned, but this covers loads where alignment doesn't run)
+            RecomputeDeltaTime();
             RefreshCharts();
         }
 
         if (warnings.Count > 0)
         {
             await DisplayAlertAsync("Parse Warnings", SummarizeWarnings(warnings), "OK");
+        }
+
+        if (filePaths.Count > 0)
+        {
+            // first load: the wizard marks the start position on the first run; every run
+            // loaded after aligns to it automatically
+            await AlignNewRunsAsync();
         }
     }
 
@@ -720,60 +746,46 @@ public partial class MainPage : ContentPage
     }
 
     /// <summary>
-    /// Picks sensible default run/channel selections the first time data is loaded for each
-    /// graph independently. Once a graph's picker has been used (Done clicked), that graph's
-    /// selection is left alone on later loads - newly appearing runs/channels just won't
-    /// show until manually checked. X/Y axis channel choices are separate fields and persist
-    /// as-is regardless of this method (they only change when the user picks a new one).
+    /// Gives each newly loaded run its default selections - and changes nothing else. A run
+    /// is defaulted exactly once, when it first appears; loading more files never touches
+    /// the checkboxes of runs already on the charts (it used to rebuild every graph's
+    /// selection on each load, silently clobbering what the user had checked). Strip Chart
+    /// defaults are stripChartDefaultChannelNames (the last applied picker selection, or
+    /// gX/gY/gZ initially), falling back to all of the run's selectable channels; the XY
+    /// charts simply include the run. X/Y axis channel choices are separate fields and
+    /// persist as-is regardless of this method.
     /// </summary>
     private void RefreshSelectionDefaults()
     {
-        if (!stripChartCustomized)
+        foreach (RunData run in dataLogger.runData)
         {
-            List<string> preferred = new();
-            foreach (RunData run in dataLogger.runData)
+            if (!selectionInitializedRuns.Add(run.runName))
             {
-                foreach (string name in run.channels.Keys)
-                {
-                    if (stripChartDefaultChannelNames.Contains(name) && !preferred.Contains(name))
-                    {
-                        preferred.Add(name);
-                    }
-                }
+                continue; // already defaulted once - the user's checkboxes stand
             }
-            IEnumerable<string> channelsToDefault = preferred.Count > 0
-                ? preferred
-                : dataLogger.runData.SelectMany(r => r.channels.Keys).Where(n => !NonSelectableChannels.Contains(n)).Distinct();
 
-            stripChartSelection.Clear();
-            foreach (RunData run in dataLogger.runData)
+            List<string> channelsToDefault = run.channels.Keys
+                .Where(stripChartDefaultChannelNames.Contains)
+                .ToList();
+            if (channelsToDefault.Count == 0)
             {
-                foreach (string name in channelsToDefault)
-                {
-                    if (run.channels.ContainsKey(name))
-                    {
-                        stripChartSelection.Add((run.runName, name));
-                    }
-                }
+                channelsToDefault = run.channels.Keys.Where(n => !NonSelectableChannels.Contains(n)).ToList();
             }
-        }
+            foreach (string name in channelsToDefault)
+            {
+                stripChartSelection.Add((run.runName, name));
+            }
+            // Delta-T in use? the new run gets the calculated channel too (data lands via
+            // RecomputeDeltaTime right after this), so select it like the original runs
+            // were when Delta-T was first computed. Safe to select before the data exists:
+            // the drawable only draws channels the run actually has.
+            if (deltaTimeBaseRunName != null)
+            {
+                stripChartSelection.Add((run.runName, DeltaTime.ChannelName));
+            }
 
-        if (!trackMapCustomized)
-        {
-            trackMapSelectedRuns.Clear();
-            foreach (RunData run in dataLogger.runData)
-            {
-                trackMapSelectedRuns.Add(run.runName);
-            }
-        }
-
-        if (!tractionCircleCustomized)
-        {
-            tractionCircleSelectedRuns.Clear();
-            foreach (RunData run in dataLogger.runData)
-            {
-                tractionCircleSelectedRuns.Add(run.runName);
-            }
+            trackMapSelectedRuns.Add(run.runName);
+            tractionCircleSelectedRuns.Add(run.runName);
         }
 
         UpdateCursorEligibleRuns();
@@ -809,8 +821,9 @@ public partial class MainPage : ContentPage
         }
 
         SortedDictionary<string, List<ChannelOption>> byChannel = new();
-        foreach (RunData run in dataLogger.runData)
+        for (int runIdx = 0; runIdx < dataLogger.runData.Count; runIdx++)
         {
+            RunData run = dataLogger.runData[runIdx];
             foreach (string name in run.channels.Keys)
             {
                 if (NonSelectableChannels.Contains(name))
@@ -824,6 +837,9 @@ public partial class MainPage : ContentPage
                 }
                 string key = EncodeSeriesKey(name, run.runName);
                 ChannelOption option = new(key, run.runName, stripChartSelection.Contains((run.runName, name)));
+                // the color the trace actually draws with (run index into the auto palette,
+                // same as the drawable), so the swatch isn't blank without an override
+                option.AutoColor = ChartColors.ForRunIndex(runIdx);
                 if (stripChartChannelColorOverride.TryGetValue((run.runName, name), out Color? color))
                 {
                     option.Color = color;
@@ -856,7 +872,6 @@ public partial class MainPage : ContentPage
 
         ChannelSelectionPage page = new("Strip Chart Channels", groups, result =>
         {
-            stripChartCustomized = true;
             stripChartSelection.Clear();
             foreach (string key in result.SelectedKeys)
             {
@@ -915,7 +930,6 @@ public partial class MainPage : ContentPage
         await SelectXYChannelsAsync("Track Map Channels", trackMapSelectedRuns, trackMapXAxis, trackMapYAxis,
             trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth, result =>
         {
-            trackMapCustomized = true;
             trackMapSelectedRuns.Clear();
             foreach (string runName in result.SelectedKeys)
             {
@@ -941,7 +955,6 @@ public partial class MainPage : ContentPage
         await SelectXYChannelsAsync("Traction Circle Channels", tractionCircleSelectedRuns, tractionCircleXAxis, tractionCircleYAxis,
             tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth, result =>
         {
-            tractionCircleCustomized = true;
             tractionCircleSelectedRuns.Clear();
             foreach (string runName in result.SelectedKeys)
             {
@@ -988,9 +1001,12 @@ public partial class MainPage : ContentPage
         }
 
         List<string> axisOptions = GetAllChannelNames();
-        List<ChannelOption> items = dataLogger.runData.Select(r =>
+        List<ChannelOption> items = dataLogger.runData.Select((r, runIdx) =>
         {
             ChannelOption option = new(r.runName, r.runName, currentRunSelection.Contains(r.runName));
+            // the color the trace actually draws with when no override is set, so the
+            // swatch shows the run's current color instead of sitting blank
+            option.AutoColor = ChartColors.ForRunIndex(runIdx);
             if (runColors.TryGetValue(r.runName, out Color? color))
             {
                 option.Color = color;
@@ -1041,27 +1057,20 @@ public partial class MainPage : ContentPage
     private void OnZoomAllClicked(object? sender, EventArgs e) => ResetZoomToFull();
 
     /// <summary>
-    /// Opens the manual alignment wizard: one point per run on the current Strip Chart X
-    /// axis, and the runs' Time or Distance offsets shift so the points line up. A manual
-    /// fallback for when automatic alignment gets it wrong (proper position-based
-    /// start/finish lines are a planned replacement). Each run shows its currently selected
-    /// Strip Chart channels, falling back to a default/first channel so there's always a
-    /// trace to mark against.
+    /// Builds the (run, series) list the alignment wizard needs from the candidate runs:
+    /// each run's currently selected Strip Chart channels, falling back to a default/first
+    /// channel so there's always a trace to mark against. Runs with no data on the axis
+    /// (e.g. no distance data on a distance axis) are skipped.
     /// </summary>
-    private async void OnAlignRunsClicked(object? sender, EventArgs e)
+    private List<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> BuildAlignmentWizardRuns(
+        string axisChannel, IEnumerable<RunData> candidateRuns)
     {
-        if (dataLogger.runData.Count < 2)
-        {
-            await DisplayAlertAsync("Align Runs", "Load at least two runs to align.", "OK");
-            return;
-        }
-
-        bool axisIsTime = stripChartXAxis == StripChartDrawable.TimeAxis;
+        bool axisIsTime = axisChannel == StripChartDrawable.TimeAxis;
         List<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> wizardRuns = new();
-        foreach (RunData run in dataLogger.runData)
+        foreach (RunData run in candidateRuns)
         {
             if (!axisIsTime &&
-                (!run.channels.TryGetValue(stripChartXAxis, out DataChannel? axisData) || axisData.DataPoints.Count == 0))
+                (!run.channels.TryGetValue(axisChannel, out DataChannel? axisData) || axisData.DataPoints.Count == 0))
             {
                 continue; // can't distance-align a run that has no distance data
             }
@@ -1080,19 +1089,173 @@ public partial class MainPage : ContentPage
             }
             wizardRuns.Add((run, series));
         }
-        if (wizardRuns.Count < 2)
+        return wizardRuns;
+    }
+
+    /// <summary>True while the start-position wizard is on screen - stops a second one
+    /// (e.g. from an autoload tick) from stacking on top of it.</summary>
+    private bool alignWizardOpen;
+
+    /// <summary>Number of loaded runs already aligned to the start position (the reference
+    /// run counts as aligned); runs past this index still need auto-alignment.</summary>
+    private int alignedRunCount;
+
+    /// <summary>
+    /// Aligns runs after every load. The first load opens the wizard so the user marks the
+    /// start position on the first run; every run loaded after that (including any others
+    /// in that first load) is aligned automatically - its GPS point nearest the marked
+    /// position gets the start position's time/distance, setting the run's offsets. No
+    /// start position defined (wizard cancelled)? The wizard is offered again on the next
+    /// load (<paramref name="offerWizard"/> false skips that re-offer, for timer ticks
+    /// where no user action happened).
+    /// </summary>
+    private async Task AlignNewRunsAsync(bool offerWizard = true)
+    {
+        if (alignWizardOpen || alignedRunCount >= dataLogger.runData.Count)
         {
-            await DisplayAlertAsync("Align Runs", $"Need at least two runs with {stripChartXAxis} data to align.", "OK");
+            return;
+        }
+
+        if (dataLogger.RunStartPosition == null)
+        {
+            if (offerWizard)
+            {
+                await ShowStartPositionWizardAsync(dataLogger.runData[0], showErrors: false);
+            }
+            return;
+        }
+
+        List<string> warnings = new();
+        for (int i = alignedRunCount; i < dataLogger.runData.Count; i++)
+        {
+            RunData run = dataLogger.runData[i];
+            string? warning = RunAlignment.AlignToStartPosition(dataLogger, run);
+            if (warning != null)
+            {
+                warnings.Add(warning);
+                AppLogger.Log($"Align to start position: {warning}");
+            }
+            else
+            {
+                AppLogger.Log($"Aligned {run.runName} to the start position "
+                    + $"(time offset {run.TimeOffset:0.000}, distance offset {run.DistanceOffset:0.00})");
+            }
+        }
+        alignedRunCount = dataLogger.runData.Count;
+        RecomputeDeltaTime();
+        RefreshCharts();
+        if (warnings.Count > 0)
+        {
+            await DisplayAlertAsync("Align Runs", string.Join("\n", warnings), "OK");
+        }
+    }
+
+    /// <summary>
+    /// Opens the start-position wizard on the given reference run (marking on the current
+    /// Strip Chart X axis). On Finish the reference run becomes the coordinate baseline:
+    /// every run's Time/Distance offsets are reset, the mark becomes the stored start
+    /// position (in the reference run's raw space), and every other loaded run is aligned
+    /// to it automatically. Cancelling changes nothing.
+    /// </summary>
+    private async Task ShowStartPositionWizardAsync(RunData referenceRun, bool showErrors)
+    {
+        List<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> wizardRuns =
+            BuildAlignmentWizardRuns(stripChartXAxis, new[] { referenceRun });
+        if (wizardRuns.Count == 0)
+        {
+            string message = $"{referenceRun.runName} has no {stripChartXAxis} data to mark a start position on.";
+            AppLogger.Log($"Start position wizard: {message}");
+            if (showErrors)
+            {
+                await DisplayAlertAsync("Align Runs", message, "OK");
+            }
             return;
         }
 
         AlignmentWizardPage page = new(dataLogger, stripChartXAxis, wizardRuns, onFinished: () =>
         {
+            // the wizard captured the start position in display space (the reference run's
+            // current offsets applied); shift it into the run's raw space so that run can
+            // become the zero-offset baseline everything realigns against
+            StartPosition? anchor = dataLogger.RunStartPosition;
+            if (anchor != null)
+            {
+                anchor.AlignedTime -= referenceRun.TimeOffset;
+                anchor.AlignedDistance -= referenceRun.DistanceOffset; // NaN stays NaN
+                dataLogger.DistanceAlignPoint = anchor.AlignedDistance;
+            }
+
+            // reset every offset, then rebuild each non-reference run's offsets from
+            // scratch against the new start position
+            List<string> warnings = new();
+            foreach (RunData run in dataLogger.runData)
+            {
+                run.TimeOffset = 0.0F;
+                run.DistanceOffset = 0.0F;
+            }
+            foreach (RunData run in dataLogger.runData)
+            {
+                if (run == referenceRun)
+                {
+                    continue;
+                }
+                string? warning = RunAlignment.AlignToStartPosition(dataLogger, run);
+                if (warning != null)
+                {
+                    warnings.Add(warning);
+                    AppLogger.Log($"Align to start position: {warning}");
+                }
+            }
+            alignedRunCount = dataLogger.runData.Count;
             // the offsets just changed, so a Delta-T built from the old offsets is stale
             RecomputeDeltaTime();
             RefreshCharts();
+            if (warnings.Count > 0)
+            {
+                _ = DisplayAlertAsync("Align Runs", string.Join("\n", warnings), "OK");
+            }
         });
+        alignWizardOpen = true;
+        page.Disappearing += (_, _) => alignWizardOpen = false;
         await Navigation.PushModalAsync(page);
+    }
+
+    /// <summary>
+    /// Align Runs command: pick the run to align against (skipped when only one is
+    /// loaded), mark the start position on it in the wizard, and on Finish all runs'
+    /// offsets are reset and realigned to that position (nearest GPS point sets each
+    /// other run's time/distance offsets). Also the manual redo for a cancelled or
+    /// misplaced on-load alignment.
+    /// </summary>
+    private async void OnAlignRunsClicked(object? sender, EventArgs e)
+    {
+        if (dataLogger.runData.Count == 0)
+        {
+            await DisplayAlertAsync("Align Runs", "Load a log file first.", "OK");
+            return;
+        }
+        if (alignWizardOpen)
+        {
+            return;
+        }
+
+        RunData referenceRun;
+        if (dataLogger.runData.Count == 1)
+        {
+            referenceRun = dataLogger.runData[0];
+        }
+        else
+        {
+            string[] runNames = dataLogger.runData.Select(r => r.runName).ToArray();
+            string choice = await DisplayActionSheetAsync("Align Runs - pick the reference run", "Cancel", null, runNames);
+            RunData? chosen = dataLogger.runData.FirstOrDefault(r => r.runName == choice);
+            if (chosen == null)
+            {
+                return; // cancelled
+            }
+            referenceRun = chosen;
+        }
+        await ShowStartPositionWizardAsync(referenceRun, showErrors: true);
     }
 
     // base run of the most recent Delta-T computation, so anything that changes the
@@ -1151,7 +1314,6 @@ public partial class MainPage : ContentPage
                 stripChartSelection.Add((run.runName, DeltaTime.ChannelName));
             }
         }
-        stripChartCustomized = true;
         stripChartDefaultChannelNames = stripChartSelection.Select(s => s.ChannelName).ToHashSet();
         UpdateCursorEligibleRuns();
         SaveConfig();
@@ -1178,6 +1340,68 @@ public partial class MainPage : ContentPage
         RefreshCharts();
     }
 
+    /// <summary>
+    /// Unloads the given runs (picked in the Settings dialog) and scrubs every piece of
+    /// per-run state that references them - chart selections and per-run trace overrides -
+    /// so nothing keeps drawing or saving a run that no longer exists. A removed run's file
+    /// stays in the autoload "seen" list, so autoload won't quietly bring it back; reload
+    /// it through Open Files instead.
+    /// </summary>
+    private void RemoveRuns(IReadOnlyList<string> runNames)
+    {
+        if (runNames.Count == 0)
+        {
+            return;
+        }
+        HashSet<string> names = new(runNames);
+        dataLogger.runData.RemoveAll(r => names.Contains(r.runName));
+        stripChartSelection.RemoveWhere(s => names.Contains(s.RunName));
+        trackMapSelectedRuns.RemoveWhere(names.Contains);
+        tractionCircleSelectedRuns.RemoveWhere(names.Contains);
+        foreach ((string RunName, string ChannelName) key in
+                 stripChartChannelColorOverride.Keys.Where(k => names.Contains(k.RunName)).ToList())
+        {
+            stripChartChannelColorOverride.Remove(key);
+        }
+        foreach (string name in names)
+        {
+            trackMapRunColor.Remove(name);
+            trackMapInvertedRuns.Remove(name);
+            trackMapRunPenWidth.Remove(name);
+            tractionCircleRunColor.Remove(name);
+            tractionCircleInvertedRuns.Remove(name);
+            tractionCircleRunPenWidth.Remove(name);
+            // forget the run was ever defaulted, so reloading it starts it fresh
+            selectionInitializedRuns.Remove(name);
+        }
+
+        // the survivors keep their alignment, and nothing new is pending
+        alignedRunCount = dataLogger.runData.Count;
+        if (dataLogger.runData.Count == 0)
+        {
+            // nothing left that the start position anchors - the next load defines a new one
+            dataLogger.RunStartPosition = null;
+            dataLogger.DistanceAlignPoint = float.NaN;
+        }
+
+        if (deltaTimeBaseRunName != null && names.Contains(deltaTimeBaseRunName))
+        {
+            // Delta-T's base run is gone: the surviving traces compare against a run that no
+            // longer exists, so drop them rather than keep showing a stale comparison
+            deltaTimeBaseRunName = null;
+            foreach (RunData run in dataLogger.runData)
+            {
+                run.channels.Remove(DeltaTime.ChannelName);
+                run.channelRanges.Remove(DeltaTime.ChannelName);
+            }
+            stripChartSelection.RemoveWhere(s => s.ChannelName == DeltaTime.ChannelName);
+        }
+
+        AppLogger.Log($"Removed run(s): {string.Join(", ", runNames)}");
+        UpdateCursorEligibleRuns();
+        RefreshCharts();
+    }
+
     private async void OnSettingsClicked(object? sender, EventArgs e)
     {
         SettingsPage page = new(
@@ -1187,6 +1411,7 @@ public partial class MainPage : ContentPage
             stripChartDisplayMode,
             trackMapDisplayMode,
             tractionCircleDisplayMode,
+            dataLogger.runData.Select(r => r.runName).ToList(),
             (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay) =>
             {
                 bool autoloadFolderChanged = autoloadFolder != settings.AutoloadFolderPath;
@@ -1205,7 +1430,8 @@ public partial class MainPage : ContentPage
                     StartAutoload();
                 }
                 RefreshCharts();
-            });
+            },
+            RemoveRuns);
         await Navigation.PushModalAsync(page);
     }
 

@@ -24,6 +24,11 @@ public class StripChartDrawable : IDrawable
     /// <summary>X-axis value to draw the vertical cursor line at; null hides it.</summary>
     public float? CursorTime { get; set; }
 
+    /// <summary>Pixel Y of the pointer that last placed the cursor; null when unknown. The
+    /// cursor readout flips to the bottom of the plot while the pointer is in the top half,
+    /// so the text is never under what the user is pointing at.</summary>
+    public float? CursorPixelY { get; set; }
+
     /// <summary>Whether this chart's traces draw as connected lines or individual points - set
     /// independently per chart, not shared with Track Map/Traction Circle.</summary>
     public ChartDisplayMode DisplayMode { get; set; } = ChartDisplayMode.Line;
@@ -677,10 +682,17 @@ public class StripChartDrawable : IDrawable
             canvas.StrokeSize = 1;
             canvas.DrawLine(cursorX, plotTop, cursorX, plotBottom);
 
-            const float labelWidth = 140;
+            const float labelWidth = 220;
             bool labelsOnRight = cursorX < (plotLeft + plotRight) / 2;
             float labelX = labelsOnRight ? cursorX + 4 : cursorX - labelWidth;
-            float labelY = plotTop + 2;
+
+            // pointer in the top half? move the readout to the bottom of the plot (and vice
+            // versa), so the text never sits on top of the data the user is pointing at
+            bool labelsAtBottom = CursorPixelY.HasValue && CursorPixelY.Value < (plotTop + plotBottom) / 2;
+            float readoutHeight = 16 + series.Count(s => s.Points.Count > 0) * 14;
+            float labelY = labelsAtBottom
+                ? Math.Max(plotTop + 2, plotBottom - readoutHeight - 2)
+                : plotTop + 2;
 
             // X-axis value readout at the top of the cursor line, so it's clear exactly
             // which moment (or distance, etc.) the tracked values below belong to
@@ -700,7 +712,9 @@ public class StripChartDrawable : IDrawable
                 string displayName = IsInverted(channelName) ? channelName + " (inv)" : channelName;
                 canvas.FontColor = ColorFor(run, channelName);
                 canvas.FontSize = 11;
-                canvas.DrawString($"{displayName}={nearestY:0.##}", labelX, labelY, labelWidth, 14, HorizontalAlignment.Left, VerticalAlignment.Top);
+                // run name included: several runs usually track the same channels, and color
+                // alone doesn't say which line of the readout belongs to which run
+                canvas.DrawString($"{run.runName} {displayName}={nearestY:0.##}", labelX, labelY, labelWidth, 14, HorizontalAlignment.Left, VerticalAlignment.Top);
                 labelY += 14;
             }
         }
