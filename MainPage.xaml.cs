@@ -716,9 +716,23 @@ public partial class MainPage : ContentPage
     }
 
     /// <summary>Parses one log file into <see cref="dataLogger"/>. Returns any parse warning
-    /// text (or null), and does not touch the charts - callers refresh them once, afterward.</summary>
+    /// text (or null), and does not touch the charts - callers refresh them once, afterward.
+    /// A file whose run is already loaded is refused with an alert: run names (the file name
+    /// without extension) key all per-run state, so loading a duplicate corrupts selections
+    /// and crashes Android outright.</summary>
     private async Task<string?> ParseFileAsync(string filePath)
     {
+        string runName = Path.GetFileNameWithoutExtension(filePath);
+        if (dataLogger.runData.Any(r => r.runName.Equals(runName, StringComparison.OrdinalIgnoreCase)))
+        {
+            AppLogger.Log($"Refused {filePath}: run \"{runName}\" is already loaded");
+            await DisplayAlertAsync(
+                "Already Loaded",
+                $"{Path.GetFileName(filePath)} is already loaded. To reload it, remove the run in Settings first.",
+                "OK");
+            return null;
+        }
+
         string extension = Path.GetExtension(filePath).ToLowerInvariant();
         AppLogger.Log($"Opening file {filePath}");
         try
