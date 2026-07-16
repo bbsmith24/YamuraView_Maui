@@ -94,6 +94,31 @@ public class XYChartDrawable : IDrawable
     private int? cachedPathKey;
     private List<(RunData Run, int RunIndex, PathF Path)> cachedPaths = new();
 
+    // point-display-mode analogue of cachedPaths: the visible, deduped pixel positions per
+    // run - without it every repaint (cursor moves included) rescaled and hit-tested every
+    // data point again
+    private int? cachedPointKey;
+    private List<(RunData Run, int RunIndex, List<(float X, float Y)> Pixels)> cachedPointRuns = new();
+
+    // fitted ranges for the current TimeRangeFilter (a Strip Chart zoom) - recomputing
+    // them scanned every data point on every repaint while zoomed, which made cursor
+    // tracking lag badly the moment the user zoomed in
+    private int? cachedFilterKey;
+    private float cachedFilteredMinX, cachedFilteredMaxX, cachedFilteredMinY, cachedFilteredMaxY;
+
+    private int ComputeFilterKey(int dataFingerprint, IReadOnlyDictionary<string, (float TMin, float TMax)> filter)
+    {
+        HashCode hash = new();
+        hash.Add(dataFingerprint);
+        foreach ((string runName, (float tMin, float tMax)) in filter)
+        {
+            hash.Add(runName);
+            hash.Add(tMin);
+            hash.Add(tMax);
+        }
+        return hash.ToHashCode();
+    }
+
     private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float minX, float maxX, float minY, float maxY)
     {
         HashCode hash = new();
@@ -218,25 +243,42 @@ public class XYChartDrawable : IDrawable
         else
         {
             // zoomed: auto-fit to only the points inside each run's selected time window
-            // (a run missing from the filter auto-fits its full data, unaffected)
-            minX = float.MaxValue;
-            maxX = float.MinValue;
-            minY = float.MaxValue;
-            maxY = float.MinValue;
-            foreach ((RunData run, _, List<(float Time, float X, float Y)> points) in cachedRunPoints)
+            // (a run missing from the filter auto-fits its full data, unaffected). The scan
+            // touches every point, so it's cached - cursor-only repaints skip it entirely.
+            int filterKey = ComputeFilterKey(fingerprint, TimeRangeFilter);
+            if (filterKey != cachedFilterKey)
             {
-                bool hasWindow = TimeRangeFilter.TryGetValue(run.runName, out (float TMin, float TMax) range);
-                foreach ((float time, float xVal, float yVal) in points)
+                minX = float.MaxValue;
+                maxX = float.MinValue;
+                minY = float.MaxValue;
+                maxY = float.MinValue;
+                foreach ((RunData run, _, List<(float Time, float X, float Y)> points) in cachedRunPoints)
                 {
-                    if (hasWindow && (time < range.TMin || time > range.TMax))
+                    bool hasWindow = TimeRangeFilter.TryGetValue(run.runName, out (float TMin, float TMax) range);
+                    foreach ((float time, float xVal, float yVal) in points)
                     {
-                        continue;
+                        if (hasWindow && (time < range.TMin || time > range.TMax))
+                        {
+                            continue;
+                        }
+                        minX = Math.Min(minX, xVal);
+                        maxX = Math.Max(maxX, xVal);
+                        minY = Math.Min(minY, yVal);
+                        maxY = Math.Max(maxY, yVal);
                     }
-                    minX = Math.Min(minX, xVal);
-                    maxX = Math.Max(maxX, xVal);
-                    minY = Math.Min(minY, yVal);
-                    maxY = Math.Max(maxY, yVal);
                 }
+                cachedFilteredMinX = minX;
+                cachedFilteredMaxX = maxX;
+                cachedFilteredMinY = minY;
+                cachedFilteredMaxY = maxY;
+                cachedFilterKey = filterKey;
+            }
+            else
+            {
+                minX = cachedFilteredMinX;
+                maxX = cachedFilteredMaxX;
+                minY = cachedFilteredMinY;
+                maxY = cachedFilteredMaxY;
             }
         }
 
@@ -297,28 +339,52 @@ public class XYChartDrawable : IDrawable
         // in the plot, so this reflects around the used area's center too)
         if (DisplayMode == ChartDisplayMode.Point)
         {
-            foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
+            // visible pixel positions are cached like the line-mode paths - cursor-only
+            // repaints just replay them instead of rescaling every data point. The
+            // visibility margin is the stepper's max pen width, so the cache stays valid
+            // when the pen width changes (radius is still looked up at draw time).
+            const float maxPenWidth = 5f;
+            int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
+            if (pointKey != cachedPointKey)
+            {
+                cachedPointRuns = new();
+                foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
+                {
+                    bool invertedRun = IsInverted(run.runName);
+                    List<(float X, float Y)> pixels = new();
+                    float lastPx = float.MinValue, lastPy = float.MinValue;
+                    foreach ((_, float xVal, float yVal) in runPoints)
+                    {
+                        float px = scaleX(xVal);
+                        float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
+                        if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth ||
+                            py < plotTop - maxPenWidth || py > plotBottom + maxPenWidth)
+                        {
+                            continue; // outside the visible plot (when zoomed)
+                        }
+                        if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                        {
+                            continue; // sub-pixel duplicate of the previous drawn point
+                        }
+                        pixels.Add((px, py));
+                        lastPx = px;
+                        lastPy = py;
+                    }
+                    if (pixels.Count > 0)
+                    {
+                        cachedPointRuns.Add((run, runIdx, pixels));
+                    }
+                }
+                cachedPointKey = pointKey;
+            }
+
+            foreach ((RunData run, int runIdx, List<(float X, float Y)> pixels) in cachedPointRuns)
             {
                 float penWidth = PenWidthFor(run.runName);
-                bool invertedRun = IsInverted(run.runName);
                 canvas.FillColor = ColorFor(runIdx, run.runName);
-                float lastPx = float.MinValue, lastPy = float.MinValue;
-                foreach ((_, float xVal, float yVal) in runPoints)
+                foreach ((float px, float py) in pixels)
                 {
-                    float px = scaleX(xVal);
-                    float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
-                    if (px < plotLeft - penWidth || px > plotRight + penWidth ||
-                        py < plotTop - penWidth || py > plotBottom + penWidth)
-                    {
-                        continue; // outside the visible plot (when zoomed)
-                    }
-                    if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
-                    {
-                        continue; // sub-pixel duplicate of the previous drawn point
-                    }
                     canvas.FillCircle(px, py, penWidth);
-                    lastPx = px;
-                    lastPy = py;
                 }
             }
         }

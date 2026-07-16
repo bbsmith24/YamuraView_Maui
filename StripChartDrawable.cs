@@ -128,6 +128,12 @@ public class StripChartDrawable : IDrawable
     private int? cachedPathKey;
     private List<(RunData Run, string ChannelName, PathF Path)> cachedPaths = new();
 
+    // point-display-mode analogue of cachedPaths: the visible, deduped pixel positions per
+    // series - without it every repaint (cursor moves included) rescaled and hit-tested
+    // every data point again
+    private int? cachedPointKey;
+    private List<(RunData Run, string ChannelName, List<(float X, float Y)> Pixels)> cachedPointSeries = new();
+
     private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float minX, float maxX)
     {
         HashCode hash = new();
@@ -537,32 +543,56 @@ public class StripChartDrawable : IDrawable
 
         if (pointMode)
         {
-            foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
+            // visible pixel positions are cached like the line-mode paths - cursor-only
+            // repaints just replay them instead of rescaling every data point. The
+            // visibility margin is the stepper's max pen width, so the cache stays valid
+            // when the pen width changes (radius is still looked up at draw time).
+            const float maxPenWidth = 5f;
+            int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX);
+            if (pointKey != cachedPointKey)
             {
-                if (points.Count == 0)
+                cachedPointSeries = new();
+                foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
                 {
-                    continue;
+                    if (points.Count == 0)
+                    {
+                        continue;
+                    }
+                    int g = GraphIndexFor(channelName);
+                    bool inverted = IsInverted(channelName);
+                    List<(float X, float Y)> pixels = new();
+                    float lastPx = float.MinValue, lastPy = float.MinValue;
+                    foreach ((float x, float y) in points)
+                    {
+                        float px = ScaleX(x);
+                        if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth)
+                        {
+                            continue; // outside the visible X window (when zoomed)
+                        }
+                        float py = ScaleYForChannel(g, y, inverted);
+                        if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                        {
+                            continue; // sub-pixel duplicate of the previous drawn point
+                        }
+                        pixels.Add((px, py));
+                        lastPx = px;
+                        lastPy = py;
+                    }
+                    if (pixels.Count > 0)
+                    {
+                        cachedPointSeries.Add((run, channelName, pixels));
+                    }
                 }
-                int g = GraphIndexFor(channelName);
-                bool inverted = IsInverted(channelName);
+                cachedPointKey = pointKey;
+            }
+
+            foreach ((RunData run, string channelName, List<(float X, float Y)> pixels) in cachedPointSeries)
+            {
                 float penWidth = PenWidthFor(channelName);
                 canvas.FillColor = ColorFor(run, channelName);
-                float lastPx = float.MinValue, lastPy = float.MinValue;
-                foreach ((float x, float y) in points)
+                foreach ((float px, float py) in pixels)
                 {
-                    float px = ScaleX(x);
-                    if (px < plotLeft - penWidth || px > plotRight + penWidth)
-                    {
-                        continue; // outside the visible X window (when zoomed)
-                    }
-                    float py = ScaleYForChannel(g, y, inverted);
-                    if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
-                    {
-                        continue; // sub-pixel duplicate of the previous drawn point
-                    }
                     canvas.FillCircle(px, py, penWidth);
-                    lastPx = px;
-                    lastPy = py;
                 }
             }
         }

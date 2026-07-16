@@ -326,7 +326,9 @@ public partial class MainPage : ContentPage
                 {
                     stripChartDrawable.DragCurrentPixelX = (float)position.Value.X;
                 }
-                RefreshCharts();
+                // the drag band only exists on the Strip Chart - the XY charts don't
+                // change until the zoom is applied on release
+                StripChartView.Invalidate();
                 break;
             case StripChartGesture.TouchScrub:
             case StripChartGesture.None:
@@ -616,12 +618,21 @@ public partial class MainPage : ContentPage
         {
             stripChartDrawable.CursorPixelY = pixelY;
         }
+        // the Strip Chart always repaints (its readout follows the pointer vertically too),
+        // but the XY box cursors only move when the axis value actually changes - purely
+        // vertical pointer movement shouldn't convert and repaint them for nothing
+        bool axisValueChanged = axisValue != stripChartDrawable.CursorTime;
         stripChartDrawable.CursorTime = axisValue;
-        IReadOnlyDictionary<string, float>? cursorTimes =
-            axisValue.HasValue ? stripChartDrawable.GetPerRunCursorTimes(axisValue.Value) : null;
-        trackMapDrawable.CursorTimes = cursorTimes;
-        tractionCircleDrawable.CursorTimes = cursorTimes;
-        RefreshCharts();
+        StripChartView.Invalidate();
+        if (axisValueChanged)
+        {
+            IReadOnlyDictionary<string, float>? cursorTimes =
+                axisValue.HasValue ? stripChartDrawable.GetPerRunCursorTimes(axisValue.Value) : null;
+            trackMapDrawable.CursorTimes = cursorTimes;
+            tractionCircleDrawable.CursorTimes = cursorTimes;
+            TrackMapView.Invalidate();
+            TractionCircleView.Invalidate();
+        }
     }
 
     /// <summary>
