@@ -603,9 +603,9 @@ public partial class MainPage : ContentPage
     /// <summary>
     /// Updates the Strip Chart's own cursor line (in whatever units its X axis uses - e.g.
     /// seconds for Time, or arbitrary units for Distance) plus the other two charts' box
-    /// cursor. The other charts always key their data by raw timestamp, so an X-axis value
-    /// (e.g. a distance) can't be handed to them directly - it always has to be converted
-    /// to the nearest actual timestamp first.
+    /// cursor. The other charts key their data by raw, unoffset timestamp, so the axis
+    /// value is converted per run - the same aligned cursor position is a different raw
+    /// time in each run once alignment offsets differ.
     /// </summary>
     private void SetCursorTime(float? axisValue, float? pixelY = null)
     {
@@ -617,9 +617,10 @@ public partial class MainPage : ContentPage
             stripChartDrawable.CursorPixelY = pixelY;
         }
         stripChartDrawable.CursorTime = axisValue;
-        float? rawTime = axisValue.HasValue ? stripChartDrawable.ConvertToTime(axisValue.Value) : null;
-        trackMapDrawable.CursorTime = rawTime;
-        tractionCircleDrawable.CursorTime = rawTime;
+        IReadOnlyDictionary<string, float>? cursorTimes =
+            axisValue.HasValue ? stripChartDrawable.GetPerRunCursorTimes(axisValue.Value) : null;
+        trackMapDrawable.CursorTimes = cursorTimes;
+        tractionCircleDrawable.CursorTimes = cursorTimes;
         RefreshCharts();
     }
 

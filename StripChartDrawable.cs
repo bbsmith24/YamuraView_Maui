@@ -101,18 +101,12 @@ public class StripChartDrawable : IDrawable
     public float? DataMinX => hasValidScale ? cachedFullMinX : null;
     public float? DataMaxX => hasValidScale ? cachedFullMaxX : null;
 
-    // cached from the most recent successful Draw(), so PixelXToTime/ConvertToTime can
-    // invert mouse moves without redoing the whole data scan/range calc on every pointer event
+    // cached from the most recent successful Draw(), so PixelXToTime can invert mouse moves
+    // without redoing the whole data scan/range calc on every pointer event
     private float cachedMinX, cachedMaxX, cachedPlotLeft, cachedPlotRight;
     private float cachedFullMinX, cachedFullMaxX;
     private bool hasValidScale;
     private List<(RunData Run, string ChannelName, List<(float X, float Y)> Points)> cachedSeries = new();
-
-    // one (time, axisValue) curve per run, built solely from XAxisChannel's own data - used
-    // to convert an axis-space value (e.g. a distance) back to the actual timestamp it came
-    // from, since Track Map/Traction Circle always key their data by real time regardless of
-    // what the Strip Chart's X axis currently is
-    private List<(RunData Run, List<(float RawTime, float AxisValue)> Points)> cachedAxisSeries = new();
 
     // Draw()'s expensive step is joining every selected channel's points and computing the
     // derived ranges - redoing that on every repaint made touch cursor-scrubbing lag on big
@@ -208,29 +202,13 @@ public class StripChartDrawable : IDrawable
         bool xIsDistance = !xIsTime && XAxisChannel.StartsWith("Distance", StringComparison.OrdinalIgnoreCase);
 
         List<(RunData Run, string ChannelName, List<(float X, float Y)> Points)> series = new();
-        List<(RunData Run, List<(float RawTime, float AxisValue)> Points)> axisSeries = new();
         foreach (RunData run in DataLogger.runData)
         {
             float distanceOffset = xIsDistance ? run.DistanceOffset : 0f;
             DataChannel? xChan = null;
-            if (xIsTime)
-            {
-                run.channels.TryGetValue(TimeAxis, out xChan);
-            }
-            else if (!run.channels.TryGetValue(XAxisChannel, out xChan))
+            if (!xIsTime && !run.channels.TryGetValue(XAxisChannel, out xChan))
             {
                 continue;
-            }
-
-            if (xChan != null && xChan.DataPoints.Count > 0)
-            {
-                List<(float, float)> axisPoints = new();
-                foreach (KeyValuePair<float, float> point in xChan.DataPoints)
-                {
-                    float axisVal = xIsTime ? point.Key + run.TimeOffset : point.Value + distanceOffset;
-                    axisPoints.Add((point.Key, axisVal));
-                }
-                axisSeries.Add((run, axisPoints));
             }
 
             foreach ((string channelName, DataChannel yChan) in run.channels)
@@ -264,7 +242,6 @@ public class StripChartDrawable : IDrawable
             }
         }
 
-        cachedAxisSeries = axisSeries;
         cachedSeries = series;
 
         float minX = float.MaxValue, maxX = float.MinValue;
@@ -357,48 +334,64 @@ public class StripChartDrawable : IDrawable
     }
 
     /// <summary>
-    /// Converts an X-axis-space value (whatever <see cref="PixelXToTime"/> returned) to the
-    /// real timestamp it corresponds to, by finding the nearest point on XAxisChannel's own
-    /// (time, value) curve for whichever run is the closest match. Always converts, even when
-    /// the axis is already Time, since AlignTime's per-run TimeOffset is display-only and
-    /// isn't applied to the other charts' data.
+    /// For each run, converts an X-axis-space value (whatever <see cref="PixelXToTime"/>
+    /// returned) to that run's own real timestamp. Per run for the same reason as
+    /// <see cref="GetPerRunTimeRange"/>: axis values are in offset-shifted display units
+    /// while Track Map/Traction Circle are keyed by unshifted raw time, so one shared raw
+    /// time would put every other run's box cursor at a different physical moment whenever
+    /// runs are aligned with different offsets. On a Time axis the conversion is pure
+    /// arithmetic (subtract the run's TimeOffset - exact, every run gets an entry); a
+    /// distance axis goes through the run's own xDistance channel (keyed distance -> time,
+    /// the parser-built inverse of Distance), and a run without it has no entry (it gets
+    /// no box cursor rather than a misleading one).
     /// </summary>
-    public float? ConvertToTime(float axisValue)
+    public IReadOnlyDictionary<string, float> GetPerRunCursorTimes(float axisValue)
     {
-        float bestTime = 0;
-        float bestDist = float.MaxValue;
-        bool found = false;
-        foreach ((_, List<(float RawTime, float AxisValue)> points) in cachedAxisSeries)
+        Dictionary<string, float> result = new();
+        foreach (RunData run in DataLogger.runData)
         {
-            if (points.Count == 0)
+            float? rawTime = XAxisChannel == TimeAxis
+                ? axisValue - run.TimeOffset
+                : RawTimeAtDistance(run, axisValue - run.DistanceOffset);
+            if (rawTime.HasValue)
             {
-                continue;
-            }
-            int lo = 0, hi = points.Count - 1;
-            while (lo < hi)
-            {
-                int mid = (lo + hi) / 2;
-                if (points[mid].AxisValue < axisValue)
-                {
-                    lo = mid + 1;
-                }
-                else
-                {
-                    hi = mid;
-                }
-            }
-            for (int idx = Math.Max(0, lo - 1); idx <= lo; idx++)
-            {
-                float dist = Math.Abs(points[idx].AxisValue - axisValue);
-                if (dist < bestDist)
-                {
-                    bestDist = dist;
-                    bestTime = points[idx].RawTime;
-                    found = true;
-                }
+                result[run.runName] = rawTime.Value;
             }
         }
-        return found ? bestTime : null;
+        return result;
+    }
+
+    /// <summary>
+    /// The run's raw timestamp at a raw (offset-free) distance, via the xDistance channel -
+    /// keyed distance -> time, so it's sorted by distance and binary-searchable directly
+    /// (its sibling Distance is keyed time -> distance, the other conversion direction).
+    /// Null when the run has no xDistance data.
+    /// </summary>
+    private static float? RawTimeAtDistance(RunData run, float rawDistance)
+    {
+        if (!run.channels.TryGetValue("xDistance", out DataChannel? xDistance) || xDistance.DataPoints.Count == 0)
+        {
+            return null;
+        }
+        IList<float> distances = xDistance.DataPoints.Keys;
+        int lo = 0, hi = distances.Count - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (distances[mid] < rawDistance)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (lo > 0 && Math.Abs(distances[lo - 1] - rawDistance) < Math.Abs(distances[lo] - rawDistance))
+        {
+            lo--;
+        }
+        return xDistance.DataPoints.Values[lo];
     }
 
     /// <summary>
@@ -413,49 +406,27 @@ public class StripChartDrawable : IDrawable
     public IReadOnlyDictionary<string, (float TMin, float TMax)> GetPerRunTimeRange(float axisMin, float axisMax)
     {
         Dictionary<string, (float, float)> result = new();
-        foreach ((RunData run, List<(float RawTime, float AxisValue)> points) in cachedAxisSeries)
+        foreach (RunData run in DataLogger.runData)
         {
-            float? tAtMin = FindNearestRawTime(points, axisMin);
-            float? tAtMax = FindNearestRawTime(points, axisMax);
+            float? tAtMin;
+            float? tAtMax;
+            if (XAxisChannel == TimeAxis)
+            {
+                // Time axis: display -> raw is pure arithmetic per run
+                tAtMin = axisMin - run.TimeOffset;
+                tAtMax = axisMax - run.TimeOffset;
+            }
+            else
+            {
+                tAtMin = RawTimeAtDistance(run, axisMin - run.DistanceOffset);
+                tAtMax = RawTimeAtDistance(run, axisMax - run.DistanceOffset);
+            }
             if (tAtMin.HasValue && tAtMax.HasValue)
             {
                 result[run.runName] = (Math.Min(tAtMin.Value, tAtMax.Value), Math.Max(tAtMin.Value, tAtMax.Value));
             }
         }
         return result;
-    }
-
-    private static float? FindNearestRawTime(List<(float RawTime, float AxisValue)> points, float axisValue)
-    {
-        if (points.Count == 0)
-        {
-            return null;
-        }
-        int lo = 0, hi = points.Count - 1;
-        while (lo < hi)
-        {
-            int mid = (lo + hi) / 2;
-            if (points[mid].AxisValue < axisValue)
-            {
-                lo = mid + 1;
-            }
-            else
-            {
-                hi = mid;
-            }
-        }
-        float bestDist = float.MaxValue;
-        float bestTime = points[lo].RawTime;
-        for (int idx = Math.Max(0, lo - 1); idx <= lo; idx++)
-        {
-            float dist = Math.Abs(points[idx].AxisValue - axisValue);
-            if (dist < bestDist)
-            {
-                bestDist = dist;
-                bestTime = points[idx].RawTime;
-            }
-        }
-        return bestTime;
     }
 
     public void Draw(ICanvas canvas, RectF dirtyRect)
@@ -467,7 +438,6 @@ public class StripChartDrawable : IDrawable
         {
             hasValidScale = false;
             cachedSeries = new();
-            cachedAxisSeries = new();
             cachedDataFingerprint = null;
             DrawCenteredMessage(canvas, dirtyRect, "No data loaded");
             return;
@@ -477,7 +447,6 @@ public class StripChartDrawable : IDrawable
         {
             hasValidScale = false;
             cachedSeries = new();
-            cachedAxisSeries = new();
             cachedDataFingerprint = null;
             DrawCenteredMessage(canvas, dirtyRect, "No channels selected");
             return;

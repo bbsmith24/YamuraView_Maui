@@ -23,11 +23,14 @@ public class XYChartDrawable : IDrawable
     public ChartDisplayMode DisplayMode { get; set; } = ChartDisplayMode.Line;
 
     /// <summary>
-    /// Time value to show a box cursor at (the nearest data point for each selected run),
+    /// Per-run raw timestamp to show a box cursor at (the nearest data point of that run),
     /// tracking the Strip Chart's cursor - matches the WinForms app's cross-chart mouse
-    /// tracking (BOX cursor mode). Null hides it.
+    /// tracking (BOX cursor mode). Per run because this chart's data is keyed by raw,
+    /// unoffset time: the same aligned cursor position is a different raw time in every
+    /// run (see <see cref="StripChartDrawable.GetPerRunCursorTimes"/>). A run missing from
+    /// the map gets no box; null hides the cursor entirely.
     /// </summary>
-    public float? CursorTime { get; set; }
+    public IReadOnlyDictionary<string, float>? CursorTimes { get; set; }
 
     /// <summary>
     /// Runs to actually draw a box cursor for, independent of <see cref="SelectedRuns"/> (which
@@ -388,7 +391,7 @@ public class XYChartDrawable : IDrawable
             }
         }
 
-        if (CursorTime.HasValue)
+        if (CursorTimes != null)
         {
             const float boxSize = 8;
             foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
@@ -397,7 +400,11 @@ public class XYChartDrawable : IDrawable
                 {
                     continue;
                 }
-                (float _, float xVal, float yVal) = FindNearestPoint(runPoints, CursorTime.Value);
+                if (!CursorTimes.TryGetValue(run.runName, out float runCursorTime))
+                {
+                    continue; // no data on the Strip Chart's current axis - no box for it
+                }
+                (float _, float xVal, float yVal) = FindNearestPoint(runPoints, runCursorTime);
                 float px = scaleX(xVal);
                 // the box cursor mirrors with its run so it lands on the drawn trace
                 float py = IsInverted(run.runName) ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
