@@ -3,13 +3,18 @@ using YamuraView.Core;
 namespace YamuraView;
 
 /// <summary>
-/// Start-position wizard: the user marks the start position on the first loaded run (on
-/// the given X axis - Time or a distance channel). Finishing records the mark's GPS
-/// location and aligned time/distance as the DataLogger's start position
-/// (<see cref="RunAlignment.SetStartPosition"/>); every run loaded afterward is aligned to
-/// it automatically, so this page is normally shown with just that one reference run. If
-/// given several runs it steps through them, shifting each run's offsets so its mark lands
-/// on the first run's - the first run's mark still defines the stored start position.
+/// Start-position wizard, in one of two modes:
+/// - Define (referenceValue null): the user marks the start position on the reference run
+///   (on the given X axis - Time or a distance channel). Finishing records the mark's GPS
+///   location and aligned time/distance as the DataLogger's start position
+///   (<see cref="RunAlignment.SetStartPosition"/>); this mode is normally shown with just
+///   that one run. Given several, it steps through them, shifting each run's offsets so
+///   its mark lands on the first run's - which still defines the stored start position.
+/// - Reference (referenceValue set): steps through the given (newly loaded) runs so the
+///   user marks the stored zero point in each; Finish shifts each run's offset so its
+///   mark lands on referenceValue. The stored start position is left untouched, and every
+///   mark starts at referenceValue, so an unmoved mark keeps the run's current
+///   (automatic) alignment.
 /// </summary>
 public class AlignmentWizardPage : ContentPage
 {
@@ -18,6 +23,7 @@ public class AlignmentWizardPage : ContentPage
     private readonly bool axisIsTime;
     private readonly IReadOnlyList<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> runs;
     private readonly Action onFinished;
+    private readonly float? referenceValue;
 
     // chosen align point per run, in display space (offsets applied) - matching what the
     // user sees, so the shift to apply is simply (first run's value - this run's value)
@@ -46,7 +52,8 @@ public class AlignmentWizardPage : ContentPage
         DataLogger dataLogger,
         string axisChannel,
         IReadOnlyList<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> runs,
-        Action onFinished)
+        Action onFinished,
+        float? referenceValue = null)
     {
         Title = "Align Runs";
         this.dataLogger = dataLogger;
@@ -54,6 +61,7 @@ public class AlignmentWizardPage : ContentPage
         axisIsTime = axisChannel == StripChartDrawable.TimeAxis;
         this.runs = runs;
         this.onFinished = onFinished;
+        this.referenceValue = referenceValue;
 
         drawable = new StripChartDrawable { DataLogger = dataLogger, XAxisChannel = axisChannel };
         chartView = new GraphicsView { Drawable = drawable };
@@ -65,9 +73,11 @@ public class AlignmentWizardPage : ContentPage
         }
 
         // same starting value for every run: an unmoved mark then shifts its run by zero
-        float initialValue = axisSamples[0].Count > 0
-            ? (axisSamples[0][0] + axisSamples[0][^1]) / 2f
-            : 0f;
+        // (in reference mode the stored zero point itself is that neutral value)
+        float initialValue = referenceValue
+            ?? (axisSamples[0].Count > 0
+                ? (axisSamples[0][0] + axisSamples[0][^1]) / 2f
+                : 0f);
         chosenValues = new float[runs.Count];
         Array.Fill(chosenValues, initialValue);
 
@@ -150,11 +160,15 @@ public class AlignmentWizardPage : ContentPage
         pan.PanUpdated += OnPanUpdated;
         chartView.GestureRecognizers.Add(pan);
 
-        string modeText = runs.Count == 1
-            ? "Tap or drag to mark the start position of this run, then Finish. Runs loaded "
-                + "later are aligned to this position automatically (nearest GPS point)."
-            : "Tap or drag to mark the same start position in every run, then Finish to line "
-                + "the marks up on the first run's mark.";
+        string modeText = referenceValue.HasValue
+            ? "Tap or drag to mark the zero point (the event marked when the start position "
+                + "was defined) in each new run, then Finish to shift the runs onto it. "
+                + "A mark you don't move keeps the run's automatic alignment."
+            : runs.Count == 1
+                ? "Tap or drag to mark the start position of this run, then Finish. Runs loaded "
+                    + "later are aligned to this position automatically (nearest GPS point)."
+                : "Tap or drag to mark the same start position in every run, then Finish to line "
+                    + "the marks up on the first run's mark.";
         Label instructions = new()
         {
             Text = modeText
@@ -405,14 +419,15 @@ public class AlignmentWizardPage : ContentPage
         return lo;
     }
 
-    /// <summary>Shifts each run's offset so its mark lands on the first run's mark (a
-    /// single-run wizard shifts nothing), then records the first run's mark as the stored
-    /// start position that later-loaded runs are auto-aligned to. Marks are in display
-    /// space, so the current offset is simply adjusted by the difference. Returns a warning
-    /// if the start position couldn't be fully captured (e.g. no GPS data), else null.</summary>
+    /// <summary>Shifts each run's offset so its mark lands on the reference - the stored
+    /// zero point in reference mode, the first run's mark otherwise. Marks are in display
+    /// space, so the current offset is simply adjusted by the difference. Define mode then
+    /// records the first run's mark as the stored start position that later-loaded runs
+    /// are auto-aligned to, returning a warning if it couldn't be fully captured (e.g. no
+    /// GPS data); reference mode leaves the stored position untouched.</summary>
     private string? ApplyOffsets()
     {
-        float reference = chosenValues[0];
+        float reference = referenceValue ?? chosenValues[0];
         for (int i = 0; i < runs.Count; i++)
         {
             float delta = reference - chosenValues[i];
@@ -424,6 +439,10 @@ public class AlignmentWizardPage : ContentPage
             {
                 runs[i].Run.DistanceOffset += delta;
             }
+        }
+        if (referenceValue.HasValue)
+        {
+            return null; // aligning to the existing start position, not redefining it
         }
         // capture the mark's GPS location and aligned time/distance (also refreshes the
         // distance align point Delta-T computes from)

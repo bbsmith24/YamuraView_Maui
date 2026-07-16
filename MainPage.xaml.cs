@@ -1105,10 +1105,13 @@ public partial class MainPage : ContentPage
     /// Aligns runs after every load. The first load opens the wizard so the user marks the
     /// start position on the first run; every run loaded after that (including any others
     /// in that first load) is aligned automatically - its GPS point nearest the marked
-    /// position gets the start position's time/distance, setting the run's offsets. No
-    /// start position defined (wizard cancelled)? The wizard is offered again on the next
-    /// load (<paramref name="offerWizard"/> false skips that re-offer, for timer ticks
-    /// where no user action happened).
+    /// position gets the start position's time/distance, setting the run's offsets. When
+    /// the Strip Chart's X axis is Time, the wizard then also steps through the new runs
+    /// so the user marks each one's zero time point by hand (the GPS match aligns distance
+    /// well, but the time zero is set manually); an unmoved mark keeps the automatic
+    /// alignment. No start position defined (wizard cancelled)? The wizard is offered
+    /// again on the next load (<paramref name="offerWizard"/> false skips the wizard
+    /// steps, for timer ticks where no user action happened).
     /// </summary>
     private async Task AlignNewRunsAsync(bool offerWizard = true)
     {
@@ -1126,10 +1129,10 @@ public partial class MainPage : ContentPage
             return;
         }
 
+        List<RunData> newRuns = dataLogger.runData.Skip(alignedRunCount).ToList();
         List<string> warnings = new();
-        for (int i = alignedRunCount; i < dataLogger.runData.Count; i++)
+        foreach (RunData run in newRuns)
         {
-            RunData run = dataLogger.runData[i];
             string? warning = RunAlignment.AlignToStartPosition(dataLogger, run);
             if (warning != null)
             {
@@ -1148,6 +1151,27 @@ public partial class MainPage : ContentPage
         if (warnings.Count > 0)
         {
             await DisplayAlertAsync("Align Runs", string.Join("\n", warnings), "OK");
+        }
+
+        // Time X axis: mark each new run's zero time point by hand, anchored to the stored
+        // start position's time - distance-axis alignment stays fully automatic
+        if (offerWizard && stripChartXAxis == StripChartDrawable.TimeAxis)
+        {
+            List<(RunData Run, HashSet<(string RunName, string ChannelName)> Series)> wizardRuns =
+                BuildAlignmentWizardRuns(stripChartXAxis, newRuns);
+            if (wizardRuns.Count == 0)
+            {
+                return;
+            }
+            AlignmentWizardPage page = new(dataLogger, stripChartXAxis, wizardRuns, onFinished: () =>
+            {
+                // the offsets just changed, so a Delta-T built from the old offsets is stale
+                RecomputeDeltaTime();
+                RefreshCharts();
+            }, referenceValue: dataLogger.RunStartPosition.AlignedTime);
+            alignWizardOpen = true;
+            page.Disappearing += (_, _) => alignWizardOpen = false;
+            await Navigation.PushModalAsync(page);
         }
     }
 
