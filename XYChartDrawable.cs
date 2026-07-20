@@ -2,6 +2,13 @@ using YamuraView.Core;
 
 namespace YamuraView;
 
+/// <summary>Physical unit of the XY chart background grid's spacing.</summary>
+public enum GridSpacingUnit
+{
+    Feet,
+    Meters,
+}
+
 /// <summary>
 /// Plots one channel against another, point-for-point by matching timestamp, across the
 /// selected runs (equivalent to the WinForms app's "Track Map" and "Traction Circle" XY
@@ -21,6 +28,34 @@ public class XYChartDrawable : IDrawable
     /// <summary>Whether this chart's traces draw as connected lines or individual points - set
     /// independently per chart, not shared with the Strip Chart or the other XY chart.</summary>
     public ChartDisplayMode DisplayMode { get; set; } = ChartDisplayMode.Line;
+
+    /// <summary>Draws a G-G reference overlay behind the traces: horizontal/vertical axis
+    /// lines through the data origin plus circles at 0.5/1.0/1.5 G. Only meaningful for the
+    /// Traction Circle (where the channels are lateral/longitudinal G); off for the Track Map.</summary>
+    public bool ShowGReference { get; set; }
+
+    /// <summary>Radius of the outermost G reference circle - the fitted range is expanded to
+    /// keep it fully in view when <see cref="ShowGReference"/> is on.</summary>
+    private const float MaxReferenceG = 1.5f;
+
+    /// <summary>In <see cref="ChartDisplayMode.CursorTrail"/> mode, how many data points
+    /// before and after the cursor point the trail line extends (so the trail spans up to
+    /// 2N+1 points).</summary>
+    public int CursorTrailPointCount { get; set; } = 25;
+
+    /// <summary>Spacing of a light-grey background grid as a physical distance in
+    /// <see cref="GridSpacingUnit"/>, its lines anchored at multiples of the spacing.
+    /// A Longitude/Latitude axis converts the distance to degrees internally (longitude
+    /// scaled by the latitude's cosine, so grid cells are square on the ground); any other
+    /// channel takes the value directly in its own data units. 0 or negative disables the
+    /// grid (the default) - the Track Map turns it on, user-set on the Settings page.</summary>
+    public float GridSpacing { get; set; }
+
+    /// <summary>Unit <see cref="GridSpacing"/> is expressed in.</summary>
+    public GridSpacingUnit GridSpacingUnit { get; set; } = GridSpacingUnit.Feet;
+
+    private const float FeetToMeters = 0.3048f;
+    private const float MetersPerDegreeLatitude = 111320f;
 
     /// <summary>
     /// Per-run raw timestamp to show a box cursor at (the nearest data point of that run),
@@ -57,6 +92,15 @@ public class XYChartDrawable : IDrawable
     /// <summary>Trace pen width (point radius in point mode) per run. A run missing from
     /// this map (or a null map) draws at <see cref="StripChartDrawable.DefaultPenWidth"/>.</summary>
     public IReadOnlyDictionary<string, float>? RunPenWidth { get; set; }
+
+    /// <summary>Display-only smoothing per channel name (see <see cref="ChannelFilter"/>),
+    /// applied to either axis's channel when building the cached display data - the raw
+    /// data is never modified. A channel missing from this map (or a null map) draws
+    /// unfiltered. Shared with the other charts, keyed by channel name.</summary>
+    public IReadOnlyDictionary<string, ChannelFilterSettings>? ChannelFilters { get; set; }
+
+    private ChannelFilterSettings? FilterFor(string channelName) =>
+        ChannelFilters != null && ChannelFilters.TryGetValue(channelName, out ChannelFilterSettings? settings) ? settings : null;
 
     private Color ColorFor(int runIndex, string runName) =>
         RunColorOverride != null && RunColorOverride.TryGetValue(runName, out Color? overrideColor)
@@ -164,6 +208,15 @@ public class XYChartDrawable : IDrawable
                 hash.Add(yChan.DataPoints.Count);
             }
         }
+        if (ChannelFilters != null)
+        {
+            foreach ((string channelName, ChannelFilterSettings settings) in ChannelFilters)
+            {
+                hash.Add(channelName);
+                hash.Add(settings.Type);
+                hash.Add(settings.WindowSize);
+            }
+        }
         return hash.ToHashCode();
     }
 
@@ -185,15 +238,25 @@ public class XYChartDrawable : IDrawable
                 continue;
             }
             List<(float Time, float X, float Y)> points = new();
-            foreach (KeyValuePair<float, float> point in xChan.DataPoints)
+            // display filters run over each channel's full value sequence (index-aligned
+            // with its timestamps) before the timestamp join, so a filtered value reflects
+            // its channel's own neighboring samples even where the other channel has gaps
+            IList<float> xValues = ChannelFilter.Apply(xChan.DataPoints.Values, FilterFor(XChannel));
+            IList<float> yValues = ChannelFilter.Apply(yChan.DataPoints.Values, FilterFor(YChannel));
+            IList<float> xTimes = xChan.DataPoints.Keys;
+            for (int i = 0; i < xTimes.Count; i++)
             {
-                if (!yChan.DataPoints.TryGetValue(point.Key, out float yVal))
+                float time = xTimes[i];
+                int yIdx = yChan.DataPoints.IndexOfKey(time);
+                if (yIdx < 0)
                 {
                     continue;
                 }
-                points.Add((point.Key, point.Value, yVal));
-                minX = Math.Min(minX, point.Value);
-                maxX = Math.Max(maxX, point.Value);
+                float xVal = xValues[i];
+                float yVal = yValues[yIdx];
+                points.Add((time, xVal, yVal));
+                minX = Math.Min(minX, xVal);
+                maxX = Math.Max(maxX, xVal);
                 minY = Math.Min(minY, yVal);
                 maxY = Math.Max(maxY, yVal);
             }
@@ -282,6 +345,17 @@ public class XYChartDrawable : IDrawable
             }
         }
 
+        if (ShowGReference)
+        {
+            // always fit the outermost reference circle, so the G-G overlay is fully
+            // visible even when the data never reaches that many G (also rescues the
+            // degenerate all-points-filtered-out case with a usable range)
+            minX = Math.Min(minX, -MaxReferenceG);
+            maxX = Math.Max(maxX, MaxReferenceG);
+            minY = Math.Min(minY, -MaxReferenceG);
+            maxY = Math.Max(maxY, MaxReferenceG);
+        }
+
         if (minX >= maxX && minY >= maxY)
         {
             DrawCenteredMessage(canvas, dirtyRect, "Not enough data to plot");
@@ -311,6 +385,9 @@ public class XYChartDrawable : IDrawable
 
         Func<float, float> scaleX;
         Func<float, float> scaleY;
+        // data values at the plot area's edges - matches the fitted range except with
+        // EqualScale, where the narrower axis's visible span is wider than its data span
+        float visMinX, visMaxX, visMinY, visMaxY;
 
         if (EqualScale)
         {
@@ -323,21 +400,105 @@ public class XYChartDrawable : IDrawable
             float offsetY = plotTop + (plotHeight - usedHeight) / 2f;
             scaleX = x => offsetX + (x - minX) / unitsPerPixel;
             scaleY = y => offsetY + usedHeight - (y - minY) / unitsPerPixel;
+            visMinX = minX - (offsetX - plotLeft) * unitsPerPixel;
+            visMaxX = minX + (plotRight - offsetX) * unitsPerPixel;
+            visMinY = minY + (offsetY + usedHeight - plotBottom) * unitsPerPixel;
+            visMaxY = minY + (offsetY + usedHeight - plotTop) * unitsPerPixel;
         }
         else
         {
             scaleX = x => plotLeft + (x - minX) / rangeX * plotWidth;
             scaleY = y => plotBottom - (y - minY) / rangeY * plotHeight;
+            visMinX = minX;
+            visMaxX = maxX;
+            visMinY = minY;
+            visMaxY = maxY;
         }
 
         canvas.StrokeColor = Colors.DimGray;
         canvas.StrokeSize = 1;
         canvas.DrawRectangle(plotLeft, plotTop, plotWidth, plotHeight);
 
+        if (GridSpacing > 0)
+        {
+            // the spacing is a physical distance - GPS degree axes convert it to degrees
+            // (longitude degrees shrink with latitude, so cells stay square on the ground);
+            // any other channel is assumed to already be in the grid's physical units
+            float spacingMeters = GridSpacingUnit == GridSpacingUnit.Feet ? GridSpacing * FeetToMeters : GridSpacing;
+            bool xIsLongitude = XChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase);
+            bool xIsLatitude = XChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase);
+            bool yIsLongitude = YChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase);
+            bool yIsLatitude = YChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase);
+            float midLatitudeDeg = yIsLatitude ? (visMinY + visMaxY) / 2f
+                : xIsLatitude ? (visMinX + visMaxX) / 2f
+                : 0f;
+            // clamped so a garbage latitude can't collapse the longitude spacing to zero
+            float cosLatitude = MathF.Max(0.05f, MathF.Cos(midLatitudeDeg * MathF.PI / 180f));
+            float spacingX = xIsLatitude ? spacingMeters / MetersPerDegreeLatitude
+                : xIsLongitude ? spacingMeters / (MetersPerDegreeLatitude * cosLatitude)
+                : GridSpacing;
+            float spacingY = yIsLatitude ? spacingMeters / MetersPerDegreeLatitude
+                : yIsLongitude ? spacingMeters / (MetersPerDegreeLatitude * cosLatitude)
+                : GridSpacing;
+
+            // grid lines at multiples of the spacing (anchored at 0 in data space), behind
+            // the traces; skipped when the spacing is tiny relative to the visible range so
+            // a bad value can't wedge the repaint drawing thousands of lines
+            const int maxGridLines = 200;
+            if ((visMaxX - visMinX) / spacingX <= maxGridLines &&
+                (visMaxY - visMinY) / spacingY <= maxGridLines)
+            {
+                canvas.StrokeColor = Colors.LightGray;
+                canvas.StrokeSize = 0.5f;
+                // line positions come from an integer multiple in double - GPS axes put
+                // large coordinates (e.g. -122°) over tiny spacings, where accumulating
+                // x += spacing in float drifts visibly across the plot
+                for (double k = Math.Ceiling(visMinX / (double)spacingX); k * spacingX <= visMaxX; k++)
+                {
+                    float px = scaleX((float)(k * spacingX));
+                    canvas.DrawLine(px, plotTop, px, plotBottom);
+                }
+                for (double k = Math.Ceiling(visMinY / (double)spacingY); k * spacingY <= visMaxY; k++)
+                {
+                    float py = scaleY((float)(k * spacingY));
+                    canvas.DrawLine(plotLeft, py, plotRight, py);
+                }
+            }
+        }
+
+        if (ShowGReference)
+        {
+            // axis lines through the data origin and circles at 0.5/1.0/1.5 G, drawn
+            // before the traces so they sit behind them; clipped to the plot area since
+            // the outer circles can extend past the fitted data range
+            canvas.SaveState();
+            canvas.ClipRectangle(plotLeft, plotTop, plotWidth, plotHeight);
+            canvas.StrokeColor = Colors.LightGray;
+            canvas.StrokeSize = 1;
+            float originPx = scaleX(0f);
+            float originPy = scaleY(0f);
+            canvas.DrawLine(plotLeft, originPy, plotRight, originPy);
+            canvas.DrawLine(originPx, plotTop, originPx, plotBottom);
+            foreach (float g in new[] { 0.5f, 1.0f, MaxReferenceG })
+            {
+                // radii from the scale functions so this stays correct even without
+                // EqualScale (where the "circle" is an ellipse in pixel space)
+                float radiusX = scaleX(g) - originPx;
+                float radiusY = originPy - scaleY(g);
+                canvas.DrawEllipse(originPx - radiusX, originPy - radiusY, radiusX * 2, radiusY * 2);
+            }
+            canvas.RestoreState();
+        }
+
         // an inverted run mirrors its trace vertically, reflecting the normal pixel Y
         // around the plot's vertical center (with EqualScale the used area is centered
         // in the plot, so this reflects around the used area's center too)
-        if (DisplayMode == ChartDisplayMode.Point)
+        if (DisplayMode is ChartDisplayMode.CursorOnly or ChartDisplayMode.CursorTrail)
+        {
+            // full traces hidden - only the reference overlay, the box cursor, and (in
+            // CursorTrail mode) the short trail around the cursor draw below
+        }
+        else if (DisplayMode == ChartDisplayMode.Point)
         {
             // visible pixel positions are cached like the line-mode paths - cursor-only
             // repaints just replay them instead of rescaling every data point. The
@@ -470,10 +631,47 @@ public class XYChartDrawable : IDrawable
                 {
                     continue; // no data on the Strip Chart's current axis - no box for it
                 }
-                (float _, float xVal, float yVal) = FindNearestPoint(runPoints, runCursorTime);
+                int cursorIdx = FindNearestPointIndex(runPoints, runCursorTime);
+                bool invertedRun = IsInverted(run.runName);
+                (float _, float xVal, float yVal) = runPoints[cursorIdx];
                 float px = scaleX(xVal);
                 // the box cursor mirrors with its run so it lands on the drawn trace
-                float py = IsInverted(run.runName) ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
+                float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
+
+                if (DisplayMode == ChartDisplayMode.CursorTrail && CursorTrailPointCount > 0)
+                {
+                    // a short line through only the points surrounding the cursor - rebuilt
+                    // every repaint since it moves with the cursor, but it's at most 2N+1
+                    // points so there's nothing worth caching
+                    int first = Math.Max(0, cursorIdx - CursorTrailPointCount);
+                    int last = Math.Min(runPoints.Count - 1, cursorIdx + CursorTrailPointCount);
+                    if (last > first)
+                    {
+                        PathF trail = new();
+                        for (int i = first; i <= last; i++)
+                        {
+                            (float _, float trailX, float trailY) = runPoints[i];
+                            float trailPx = scaleX(trailX);
+                            float trailPy = invertedRun ? plotTop + plotBottom - scaleY(trailY) : scaleY(trailY);
+                            if (i == first)
+                            {
+                                trail.MoveTo(trailPx, trailPy);
+                            }
+                            else
+                            {
+                                trail.LineTo(trailPx, trailPy);
+                            }
+                        }
+                        // clip - when zoomed, trail points can fall outside the plot area
+                        canvas.SaveState();
+                        canvas.ClipRectangle(plotLeft, plotTop, plotWidth, plotHeight);
+                        canvas.StrokeColor = ColorFor(runIdx, run.runName);
+                        canvas.StrokeSize = PenWidthFor(run.runName);
+                        canvas.DrawPath(trail);
+                        canvas.RestoreState();
+                    }
+                }
+
                 canvas.StrokeColor = ColorFor(runIdx, run.runName);
                 canvas.StrokeSize = 2;
                 canvas.DrawRectangle(px - boxSize / 2, py - boxSize / 2, boxSize, boxSize);
@@ -481,9 +679,9 @@ public class XYChartDrawable : IDrawable
         }
     }
 
-    /// <summary>Nearest point by timestamp - the list is time-sorted (built from a
-    /// SortedList), so a binary search works. Callers guarantee it's non-empty.</summary>
-    private static (float Time, float X, float Y) FindNearestPoint(List<(float Time, float X, float Y)> points, float target)
+    /// <summary>Index of the nearest point by timestamp - the list is time-sorted (built
+    /// from a SortedList), so a binary search works. Callers guarantee it's non-empty.</summary>
+    private static int FindNearestPointIndex(List<(float Time, float X, float Y)> points, float target)
     {
         int lo = 0, hi = points.Count - 1;
         while (lo < hi)
@@ -500,9 +698,9 @@ public class XYChartDrawable : IDrawable
         }
         if (lo > 0 && Math.Abs(points[lo - 1].Time - target) < Math.Abs(points[lo].Time - target))
         {
-            return points[lo - 1];
+            return lo - 1;
         }
-        return points[lo];
+        return lo;
     }
 
     private static void DrawCenteredMessage(ICanvas canvas, RectF dirtyRect, string message)

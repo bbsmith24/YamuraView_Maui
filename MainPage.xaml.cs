@@ -68,6 +68,23 @@ public partial class MainPage : ContentPage
     private ChartDisplayMode trackMapDisplayMode = ChartDisplayMode.Line;
     private ChartDisplayMode tractionCircleDisplayMode = ChartDisplayMode.Line;
 
+    /// <summary>Points before/after the cursor the Traction Circle's Cursor Trail mode
+    /// draws a line through - user-set on the Settings page, persisted in the config.</summary>
+    private int tractionCircleCursorTrailPoints = 25;
+
+    /// <summary>Track Map background grid spacing as a physical distance (see
+    /// <see cref="trackMapGridUnit"/>); GPS degree axes convert internally. 0 disables the
+    /// grid. User-set on the Settings page, persisted in the config.</summary>
+    private float trackMapGridSpacing = 100f;
+
+    /// <summary>Unit the grid spacing is expressed in (feet or meters).</summary>
+    private GridSpacingUnit trackMapGridUnit = GridSpacingUnit.Feet;
+
+    // display-only smoothing per channel name (vibration noise etc.), shared by all three
+    // charts by reference - mutated in place on settings save so the drawables' fingerprints
+    // pick up the change; raw data is never modified
+    private readonly Dictionary<string, ChannelFilterSettings> channelFilters = new();
+
     // runs that have already been given their one-time default selections - loading more
     // files must never change checkboxes for runs that are already in this set
     private readonly HashSet<string> selectionInitializedRuns = new();
@@ -98,7 +115,8 @@ public partial class MainPage : ContentPage
             ChannelColorOverride = stripChartChannelColorOverride,
             InvertedChannels = stripChartInvertedChannels,
             ChannelPenWidth = stripChartChannelPenWidth,
-            DisplayMode = stripChartDisplayMode
+            DisplayMode = stripChartDisplayMode,
+            ChannelFilters = channelFilters
         };
         trackMapDrawable = new XYChartDrawable
         {
@@ -106,11 +124,14 @@ public partial class MainPage : ContentPage
             XChannel = trackMapXAxis,
             YChannel = trackMapYAxis,
             EqualScale = true,
+            GridSpacing = trackMapGridSpacing,
+            GridSpacingUnit = trackMapGridUnit,
             SelectedRuns = trackMapSelectedRuns,
             DisplayMode = trackMapDisplayMode,
             RunColorOverride = trackMapRunColor,
             InvertedRuns = trackMapInvertedRuns,
-            RunPenWidth = trackMapRunPenWidth
+            RunPenWidth = trackMapRunPenWidth,
+            ChannelFilters = channelFilters
         };
         tractionCircleDrawable = new XYChartDrawable
         {
@@ -118,11 +139,14 @@ public partial class MainPage : ContentPage
             XChannel = tractionCircleXAxis,
             YChannel = tractionCircleYAxis,
             EqualScale = true,
+            ShowGReference = true,
             SelectedRuns = tractionCircleSelectedRuns,
             DisplayMode = tractionCircleDisplayMode,
+            CursorTrailPointCount = tractionCircleCursorTrailPoints,
             RunColorOverride = tractionCircleRunColor,
             InvertedRuns = tractionCircleInvertedRuns,
-            RunPenWidth = tractionCircleRunPenWidth
+            RunPenWidth = tractionCircleRunPenWidth,
+            ChannelFilters = channelFilters
         };
 
         StripChartView.Drawable = stripChartDrawable;
@@ -157,7 +181,75 @@ public partial class MainPage : ContentPage
         stripChartTap.Tapped += (_, e) => OnStripChartTapped(e.GetPosition(StripChartView));
         StripChartView.GestureRecognizers.Add(stripChartTap);
 
+#if WINDOWS
+        // MAUI has no cross-platform mouse-wheel event, so hook the native WinUI one on the
+        // Strip Chart's platform view - wheel up zooms in around the pointer, down zooms out
+        // (touch/trackpad platforms already have pinch). Re-subscribed defensively on every
+        // handler change since the platform view can be replaced.
+        StripChartView.HandlerChanged += (_, _) =>
+        {
+            if (StripChartView.Handler?.PlatformView is Microsoft.UI.Xaml.UIElement element)
+            {
+                element.PointerWheelChanged -= OnStripChartPointerWheel;
+                element.PointerWheelChanged += OnStripChartPointerWheel;
+            }
+        };
+#endif
+
         StartAutoload();
+    }
+
+#if WINDOWS
+    private void OnStripChartPointerWheel(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        Microsoft.UI.Input.PointerPoint point = e.GetCurrentPoint((Microsoft.UI.Xaml.UIElement)sender);
+        // 120 per physical notch; scale so one notch is one WheelZoomFactor step and finer
+        // trackpad deltas zoom proportionally less
+        int delta = point.Properties.MouseWheelDelta;
+        if (delta == 0)
+        {
+            return;
+        }
+        float factor = MathF.Pow(WheelZoomFactor, delta / 120f);
+        ZoomStripChartAroundPixel((float)point.Position.X, factor);
+        e.Handled = true;
+    }
+#endif
+
+    private const float WheelZoomFactor = 1.25f;
+
+    /// <summary>
+    /// Rescales the Strip Chart's X window by a factor (&gt;1 zooms in) around the axis value
+    /// at the given pixel X, so the data under the mouse stays put - same anchoring as pinch.
+    /// Zooming out past the full data range clears the window entirely (same as Zoom All).
+    /// </summary>
+    private void ZoomStripChartAroundPixel(float pixelX, float factor)
+    {
+        float? dataMin = stripChartDrawable.DataMinX;
+        float? dataMax = stripChartDrawable.DataMaxX;
+        if (!dataMin.HasValue || !dataMax.HasValue)
+        {
+            return; // nothing plotted yet
+        }
+        float fullWidth = dataMax.Value - dataMin.Value;
+        float visibleMin = stripChartDrawable.ZoomMinX ?? dataMin.Value;
+        float visibleMax = stripChartDrawable.ZoomMaxX ?? dataMax.Value;
+        float width = Math.Max(visibleMax - visibleMin, 1e-6f);
+        float anchorAxis = stripChartDrawable.PixelXToTime(pixelX) ?? (visibleMin + width / 2);
+        float anchorFraction = (anchorAxis - visibleMin) / width;
+
+        float newWidth = width / factor;
+        if (newWidth >= fullWidth)
+        {
+            ResetZoomToFull();
+            return;
+        }
+        newWidth = Math.Max(newWidth, fullWidth / 1000f); // same zoom-in depth cap as pinch
+
+        float newMin = anchorAxis - anchorFraction * newWidth;
+        newMin = Math.Clamp(newMin, dataMin.Value, dataMax.Value - newWidth);
+        CancelDragZoom();
+        ApplyZoom(newMin, newMin + newWidth);
     }
 
     /// <summary>
@@ -1461,8 +1553,14 @@ public partial class MainPage : ContentPage
             stripChartDisplayMode,
             trackMapDisplayMode,
             tractionCircleDisplayMode,
+            tractionCircleCursorTrailPoints,
+            trackMapGridSpacing,
+            trackMapGridUnit,
             dataLogger.runData.Select(r => r.runName).ToList(),
-            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay) =>
+            dataLogger.runData.SelectMany(r => r.channels.Keys).Distinct()
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList(),
+            channelFilters,
+            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay, tractionCircleTrailPoints, gridSpacing, gridUnit, updatedFilters) =>
             {
                 bool autoloadFolderChanged = autoloadFolder != settings.AutoloadFolderPath;
                 settings.ConfigFilePath = path;
@@ -1471,9 +1569,23 @@ public partial class MainPage : ContentPage
                 stripChartDisplayMode = stripDisplay;
                 trackMapDisplayMode = trackMapDisplay;
                 tractionCircleDisplayMode = tractionCircleDisplay;
+                tractionCircleCursorTrailPoints = tractionCircleTrailPoints;
+                trackMapGridSpacing = gridSpacing;
+                trackMapGridUnit = gridUnit;
+                trackMapDrawable.GridSpacing = trackMapGridSpacing;
+                trackMapDrawable.GridSpacingUnit = trackMapGridUnit;
+                // mutate the shared map in place - the drawables hold this same instance,
+                // and their data fingerprints fold in its contents, so this triggers a
+                // display-cache rebuild on the next repaint
+                channelFilters.Clear();
+                foreach ((string channelName, ChannelFilterSettings filterSettings) in updatedFilters)
+                {
+                    channelFilters[channelName] = filterSettings;
+                }
                 stripChartDrawable.DisplayMode = stripChartDisplayMode;
                 trackMapDrawable.DisplayMode = trackMapDisplayMode;
                 tractionCircleDrawable.DisplayMode = tractionCircleDisplayMode;
+                tractionCircleDrawable.CursorTrailPointCount = tractionCircleCursorTrailPoints;
                 SaveConfig();
                 if (autoloadFolderChanged)
                 {
@@ -1519,6 +1631,19 @@ public partial class MainPage : ContentPage
             if (colors.Count > 0)
             {
                 ChartColors.Palette = colors.ToArray();
+            }
+
+            channelFilters.Clear();
+            foreach (XElement filterElement in root.Element("ChannelFilters")?.Elements("Filter") ?? Enumerable.Empty<XElement>())
+            {
+                string? name = (string?)filterElement.Attribute("Name");
+                if (!string.IsNullOrEmpty(name) &&
+                    Enum.TryParse((string?)filterElement.Attribute("Type"), out ChannelFilterType filterType) &&
+                    filterType != ChannelFilterType.None &&
+                    int.TryParse((string?)filterElement.Attribute("Window"), out int filterWindow) && filterWindow >= 3)
+                {
+                    channelFilters[name] = new ChannelFilterSettings(filterType, filterWindow);
+                }
             }
 
             XElement? stripChart = root.Element("StripChart");
@@ -1588,6 +1713,14 @@ public partial class MainPage : ContentPage
                 {
                     trackMapDisplayMode = trackMapDisplay;
                 }
+                if (float.TryParse((string?)trackMap.Attribute("GridSpacing"), out float gridSpacing) && gridSpacing >= 0)
+                {
+                    trackMapGridSpacing = gridSpacing;
+                }
+                if (Enum.TryParse((string?)trackMap.Attribute("GridUnit"), out GridSpacingUnit gridUnit))
+                {
+                    trackMapGridUnit = gridUnit;
+                }
                 LoadRunSettings(trackMap, trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth);
             }
 
@@ -1599,6 +1732,10 @@ public partial class MainPage : ContentPage
                 if (Enum.TryParse((string?)tractionCircle.Attribute("DisplayMode"), out ChartDisplayMode tractionCircleDisplay))
                 {
                     tractionCircleDisplayMode = tractionCircleDisplay;
+                }
+                if (int.TryParse((string?)tractionCircle.Attribute("CursorTrailPoints"), out int trailPoints) && trailPoints > 0)
+                {
+                    tractionCircleCursorTrailPoints = trailPoints;
                 }
                 LoadRunSettings(tractionCircle, tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth);
             }
@@ -1628,6 +1765,11 @@ public partial class MainPage : ContentPage
                 new XDeclaration("1.0", "utf-8", "yes"),
                 new XElement("Config",
                     new XElement("AutoColors", ChartColors.Palette.Select(c => new XElement("Color", c.ToHex()))),
+                    new XElement("ChannelFilters", channelFilters.OrderBy(kv => kv.Key).Select(kv =>
+                        new XElement("Filter",
+                            new XAttribute("Name", kv.Key),
+                            new XAttribute("Type", kv.Value.Type.ToString()),
+                            new XAttribute("Window", kv.Value.WindowSize)))),
                     new XElement("StripChart",
                         new XAttribute("XAxis", stripChartXAxis),
                         new XAttribute("DisplayMode", stripChartDisplayMode.ToString()),
@@ -1646,11 +1788,14 @@ public partial class MainPage : ContentPage
                         new XAttribute("XAxis", trackMapXAxis),
                         new XAttribute("YAxis", trackMapYAxis),
                         new XAttribute("DisplayMode", trackMapDisplayMode.ToString()),
+                        new XAttribute("GridSpacing", trackMapGridSpacing),
+                        new XAttribute("GridUnit", trackMapGridUnit.ToString()),
                         BuildRunSettingElements(trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth)),
                     new XElement("TractionCircle",
                         new XAttribute("XAxis", tractionCircleXAxis),
                         new XAttribute("YAxis", tractionCircleYAxis),
                         new XAttribute("DisplayMode", tractionCircleDisplayMode.ToString()),
+                        new XAttribute("CursorTrailPoints", tractionCircleCursorTrailPoints),
                         BuildRunSettingElements(tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth))));
 
             string? dir = Path.GetDirectoryName(settings.ConfigFilePath);

@@ -69,6 +69,15 @@ public class StripChartDrawable : IDrawable
     private float PenWidthFor(string channelName) =>
         ChannelPenWidth != null && ChannelPenWidth.TryGetValue(channelName, out float width) ? width : DefaultPenWidth;
 
+    /// <summary>Display-only smoothing per channel name (see <see cref="ChannelFilter"/>),
+    /// applied when building the cached display series - the raw data is never modified.
+    /// Covers the Y channels and a non-Time X axis channel alike. A channel missing from
+    /// this map (or a null map) draws unfiltered. Shared with the XY charts.</summary>
+    public IReadOnlyDictionary<string, ChannelFilterSettings>? ChannelFilters { get; set; }
+
+    private ChannelFilterSettings? FilterFor(string channelName) =>
+        ChannelFilters != null && ChannelFilters.TryGetValue(channelName, out ChannelFilterSettings? settings) ? settings : null;
+
     /// <summary>
     /// Channel names whose trace is flipped vertically within its subgraph band - matches the
     /// WinForms tree's "Invert" context menu item, which also applies to every run's instance
@@ -191,6 +200,15 @@ public class StripChartDrawable : IDrawable
                 hash.Add(graphIndex);
             }
         }
+        if (ChannelFilters != null)
+        {
+            foreach ((string channelName, ChannelFilterSettings settings) in ChannelFilters)
+            {
+                hash.Add(channelName);
+                hash.Add(settings.Type);
+                hash.Add(settings.WindowSize);
+            }
+        }
         return hash.ToHashCode();
     }
 
@@ -216,6 +234,11 @@ public class StripChartDrawable : IDrawable
             {
                 continue;
             }
+            // display filter for a non-Time X axis channel, applied once per run (the Y
+            // channels each filter their own values below); index-aligned with xChan's keys
+            IList<float>? xValues = xChan != null
+                ? ChannelFilter.Apply(xChan.DataPoints.Values, FilterFor(XAxisChannel))
+                : null;
 
             foreach ((string channelName, DataChannel yChan) in run.channels)
             {
@@ -224,22 +247,26 @@ public class StripChartDrawable : IDrawable
                     continue;
                 }
                 List<(float, float)> points = new();
-                foreach (KeyValuePair<float, float> point in yChan.DataPoints)
+                IList<float> yValues = ChannelFilter.Apply(yChan.DataPoints.Values, FilterFor(channelName));
+                IList<float> yTimes = yChan.DataPoints.Keys;
+                for (int i = 0; i < yTimes.Count; i++)
                 {
+                    float time = yTimes[i];
                     float xVal;
                     if (xIsTime)
                     {
-                        xVal = point.Key + run.TimeOffset;
-                    }
-                    else if (xChan == null || !xChan.DataPoints.TryGetValue(point.Key, out xVal))
-                    {
-                        continue;
+                        xVal = time + run.TimeOffset;
                     }
                     else
                     {
-                        xVal += distanceOffset;
+                        int xIdx = xChan!.DataPoints.IndexOfKey(time);
+                        if (xIdx < 0)
+                        {
+                            continue;
+                        }
+                        xVal = xValues![xIdx] + distanceOffset;
                     }
-                    points.Add((xVal, point.Value));
+                    points.Add((xVal, yValues[i]));
                 }
                 if (points.Count > 0)
                 {

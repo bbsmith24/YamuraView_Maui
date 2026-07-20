@@ -22,7 +22,7 @@
             <FlexLayout x:Name="ColorSwatchLayout" Wrap="Wrap" JustifyContent="Start" />
 
             <Label Text="Chart Display" FontAttributes="Bold" />
-            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                 <Label Grid.Row="0" Grid.Column="0" Text="Strip Chart" VerticalOptions="Center" />
                 <Picker Grid.Row="0" Grid.Column="1" x:Name="StripChartDisplayModePicker" WidthRequest="140">
                     <Picker.ItemsSource>
@@ -41,16 +41,36 @@
                         </x:Array>
                     </Picker.ItemsSource>
                 </Picker>
-                <Label Grid.Row="2" Grid.Column="0" Text="Traction Circle" VerticalOptions="Center" />
-                <Picker Grid.Row="2" Grid.Column="1" x:Name="TractionCircleDisplayModePicker" WidthRequest="140">
+                <Label Grid.Row="2" Grid.Column="0" Text="Track Map Grid Spacing" VerticalOptions="Center" />
+                <HorizontalStackLayout Grid.Row="2" Grid.Column="1" Spacing="8">
+                    <Entry x:Name="TrackMapGridSpacingEntry" WidthRequest="66" Keyboard="Numeric" />
+                    <Picker x:Name="TrackMapGridUnitPicker" WidthRequest="90">
+                        <Picker.ItemsSource>
+                            <x:Array Type="{x:Type x:String}">
+                                <x:String>Feet</x:String>
+                                <x:String>Meters</x:String>
+                            </x:Array>
+                        </Picker.ItemsSource>
+                    </Picker>
+                </HorizontalStackLayout>
+                <Label Grid.Row="3" Grid.Column="0" Text="Traction Circle" VerticalOptions="Center" />
+                <Picker Grid.Row="3" Grid.Column="1" x:Name="TractionCircleDisplayModePicker" WidthRequest="140">
                     <Picker.ItemsSource>
                         <x:Array Type="{x:Type x:String}">
                             <x:String>Line</x:String>
                             <x:String>Point</x:String>
+                            <x:String>Cursor Only</x:String>
+                            <x:String>Cursor Trail</x:String>
                         </x:Array>
                     </Picker.ItemsSource>
                 </Picker>
+                <Label Grid.Row="4" Grid.Column="0" Text="Cursor Trail Points" VerticalOptions="Center" />
+                <Entry Grid.Row="4" Grid.Column="1" x:Name="TractionCircleTrailPointsEntry" WidthRequest="140" Keyboard="Numeric" />
             </Grid>
+
+            <Label Text="Channel Filters" FontAttributes="Bold" />
+            <Label Text="Display-only smoothing per channel (e.g. vibration noise on G channels) - the logged data is unchanged. Window is in samples, centered on each point." FontSize="12" />
+            <VerticalStackLayout x:Name="ChannelFilterLayout" Spacing="4" />
 
             <Label Text="Remove Runs" FontAttributes="Bold" />
             <Label Text="Check the runs to remove - they're unloaded when you Save (reload the log file to get one back)." FontSize="12" />
