@@ -1,0 +1,131 @@
+{
+    // One-click build/run/publish tasks for the Apple targets (macOS only).
+    // Run any of these from: Terminal > Run Task…  (or the Command Palette > "Tasks: Run Task").
+    // "Build Mac Catalyst" is the default build task, so Cmd+Shift+B runs it directly.
+    "version": "2.0.0",
+    "options": {
+        // all tasks build the MAUI app project regardless of which folder is the workspace root
+        "cwd": "${workspaceFolder}/YamuraView"
+    },
+    "tasks": [
+        {
+            "label": "🍎 Build Mac Catalyst",
+            "type": "shell",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/YamuraView/YamuraView.csproj",
+                "-f", "net10.0-maccatalyst",
+                "-c", "Debug"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "label": "🍎 Run Mac Catalyst",
+            "type": "shell",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/YamuraView/YamuraView.csproj",
+                "-f", "net10.0-maccatalyst",
+                "-c", "Debug",
+                "-t:Run"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "label": "📱 Build iOS (Simulator)",
+            "type": "shell",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/YamuraView/YamuraView.csproj",
+                "-f", "net10.0-ios",
+                "-c", "Debug"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            // Universal (Intel + Apple Silicon) Release .app - no signing needed to run on this Mac.
+            // Output: YamuraView/bin/Release/net10.0-maccatalyst/<rid>/publish/YamuraView.app
+            // Note: a Release build bumps buildnumber.txt (see the .csproj), so expect a git change.
+            "label": "🍎 Publish Mac Catalyst (.app, universal)",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "publish",
+                "${workspaceFolder}/YamuraView/YamuraView.csproj",
+                "-f", "net10.0-maccatalyst",
+                "-c", "Release",
+                "-p:RuntimeIdentifiers=maccatalyst-x64;maccatalyst-arm64"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            // Signed Release .ipa for device / TestFlight / App Store.
+            // Prompts for your Apple signing identity + provisioning profile the first time
+            // (hardcode them in the args below to skip the prompts).
+            // Output: YamuraView/bin/Release/net10.0-ios/ios-arm64/publish/YamuraView.ipa
+            "label": "📱 Publish iOS (.ipa, signed)",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "publish",
+                "${workspaceFolder}/YamuraView/YamuraView.csproj",
+                "-f", "net10.0-ios",
+                "-c", "Release",
+                "-p:RuntimeIdentifier=ios-arm64",
+                "-p:CodesignKey=${input:iosCodesignKey}",
+                "-p:CodesignProvision=${input:iosCodesignProvision}"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "iosCodesignKey",
+            "type": "promptString",
+            "description": "iOS signing identity (Keychain), e.g. 'Apple Distribution: Your Name (TEAMID)'",
+            "default": "Apple Distribution: Your Name (TEAMID)"
+        },
+        {
+            "id": "iosCodesignProvision",
+            "type": "promptString",
+            "description": "iOS provisioning profile name (as shown in Xcode / Apple Developer portal)",
+            "default": "YamuraView Distribution"
+        }
+    ]
+}

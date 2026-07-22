@@ -1,0 +1,128 @@
+==============================================================================
+ YamuraView - Building Windows and Android beta releases
+==============================================================================
+
+QUICK VERSION
+-------------
+Open a PowerShell window in the repo root (E:\GitHub\YamuraViewV9_Maui) and run:
+
+    .\publish-windows.ps1        <- ALWAYS RUN THIS FIRST (it bumps the version)
+    .\publish-android.ps1        <- then this (it reuses the same version)
+
+That's it. Outputs:
+
+  Windows installer (.msix):
+    YamuraView\bin\Release\net10.0-windows10.0.19041.0\win-x64\AppPackages\
+        YamuraView_<version>_Test\YamuraView_<version>_x64.msix
+
+  Android installer (.apk):
+    YamuraView\bin\Release\net10.0-android\publish\
+        com.yamuraelectronics.yamuraview-Signed.apk
+
+
+For security errors/warnings on build....
+Open a regular PowerShell window (no admin needed for CurrentUser scope) and run:
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+If it prompts for confirmation, answer Y.
+
+Verify it took effect:
+Get-ExecutionPolicy -List
+You should see CurrentUser = RemoteSigned, and Get-ExecutionPolicy (effective policy) should report RemoteSigned since CurrentUser outranks LocalMachine's AllSigned.
+
+Then the publish scripts run
+One caveat: if the script file ever arrives via download/browser (rather than being created locally), RemoteSigned will still block it until you run Unblock-File .\publish-windows.ps1 once — that's the "downloaded scripts must be signed or unblocked" protection working as intended.
+
+
+WHY THIS ORDER
+--------------
+The version number (1.0.X) lives in YamuraView\buildnumber.txt.
+
+  - publish-windows.ps1 BUMPS the build number first, then builds. Each run
+    of it is a new release: 1.0.4 -> 1.0.5 -> 1.0.6 ...
+  - publish-android.ps1 does NOT bump. It builds whatever number is current,
+    so running it right after the Windows script gives both platforms the
+    same version, and its Android versionCode (which must go up for updates
+    to install) follows the same number.
+
+If you only want an Android build of the CURRENT version, just run
+publish-android.ps1 alone. If you want a new version number without a
+Windows build, edit buildnumber.txt by hand (it holds a single integer).
+
+
+CHANGING THE VERSION / GOING FROM BETA TO RELEASE
+-------------------------------------------------
+Everything is in YamuraView\YamuraView.csproj, near the top:
+
+    <VersionMajor>1</VersionMajor>       <- bump for a major release
+    <VersionMinor>0</VersionMinor>       <- bump for a minor release
+    <VersionStatus>beta</VersionStatus>  <- "beta" now; make it EMPTY for a
+                                            release build:
+                                            <VersionStatus></VersionStatus>
+
+The build number (third part) comes from buildnumber.txt automatically.
+The About box and the exe file properties both read the same values, so
+they can never disagree.
+
+
+INSTALLING ON WINDOWS
+---------------------
+First time on a machine (one-time trust of the self-signed certificate):
+  1. In the output folder, double-click YamuraView_<version>_x64.cer
+  2. Install Certificate... -> Store Location: Local Machine -> Next
+     (approve the admin prompt)
+  3. "Place all certificates in the following store" -> Browse ->
+     Trusted People -> OK -> Next -> Finish
+  4. Double-click the .msix -> Install
+
+Updates on a machine that already trusts the certificate:
+  - Just double-click the new .msix -> Update
+
+Do NOT use the Install.ps1 that appears in the output folder - it's for
+developer-mode sideloading and fails with "could not acquire a developer
+license" on normal machines.
+
+
+INSTALLING ON ANDROID
+---------------------
+  1. Copy the .apk to the device (USB, cloud drive, or email).
+  2. Open it on the device (file manager or download notification).
+  3. First time only: allow "Install unknown apps" when asked. If Play
+     Protect complains, choose "More details" -> "Install anyway" (normal
+     for sideloaded apps).
+  4. Later versions install the same way and update in place.
+
+
+THE SIGNING SECRETS - BACK THESE UP
+-----------------------------------
+  Windows: certificate "CN=YamuraView" in your personal certificate store
+           (certmgr.msc -> Personal -> Certificates). Created automatically
+           by publish-windows.ps1 on first run. If you move to a new dev
+           machine, a new cert gets created and target machines must
+           re-trust it (the one-time .cer step again).
+
+  Android: yamuraview.keystore in the repo root (password: yamuraview).
+           KEEP THIS FILE SAFE. Android only accepts updates signed with
+           the same key - if it's lost, every device must uninstall and
+           reinstall. Copy it somewhere safe (cloud drive, USB stick).
+
+
+TROUBLESHOOTING
+---------------
+  "file is being used by another process" during a build
+      A YamuraView.exe you launched is still running - close it and rerun.
+
+  Windows package built with the WRONG (old) version number
+      Shouldn't happen anymore (the script wipes the Release folders first,
+      because MSIX packaging reuses stale manifests), but if it does:
+      delete YamuraView\bin\Release and YamuraView\obj\Release and rerun.
+
+  Android device says "App not installed"
+      Usually a signature mismatch (built with a different keystore) or a
+      lower versionCode than what's installed. Uninstall the app on the
+      device and install fresh.
+
+  Windows install says the certificate isn't trusted
+      The one-time certificate step (above) wasn't done on that machine,
+      or the package was signed by a different certificate than the one
+      the machine trusts.
+==============================================================================

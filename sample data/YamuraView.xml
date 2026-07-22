@@ -1,0 +1,70 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<Setup TimeAlign="true" TimeAlignChannel="gX" TimeAlignThreshold="0.5" TimeAlignRisingEdge="true">
+  <AutoColors>
+    <Color>#FFFF80</Color>
+    <Color>Fuchsia</Color>
+    <Color>#FF8000</Color>
+    <Color>#FF80C0</Color>
+    <Color>LightSkyBlue</Color>
+    <Color>LightGrey</Color>
+    <Color>White</Color>
+  </AutoColors>
+  <Strip_Chart>
+    <X_Axis Name="Distance" ID="1">
+      <Item0>Time</Item0>
+      <Item1>Distance</Item1>
+    </X_Axis>
+    <DisplayMode Name="Absolute" ID="0" ShowOverlay="True" />
+    <Channels>
+      <gX Show="False" Graph="0" Invert="False" />
+      <gY Show="False" Graph="0" Invert="False" />
+      <gZ Show="False" Graph="0" Invert="False" />
+      <D_0 Show="False" Graph="0" Invert="False" />
+      <D_1 Show="False" Graph="0" Invert="False" />
+      <D_2 Show="False" Graph="0" Invert="False" />
+      <D_3 Show="False" Graph="0" Invert="False" />
+      <D_4 Show="False" Graph="0" Invert="False" />
+      <D_5 Show="False" Graph="0" Invert="False" />
+      <D_6 Show="False" Graph="0" Invert="False" />
+      <D_7 Show="False" Graph="0" Invert="False" />
+      <A2D_0 Show="False" Graph="0" Invert="False" />
+      <A2D_1 Show="False" Graph="0" Invert="False" />
+      <A2D_2 Show="False" Graph="0" Invert="False" />
+      <A2D_3 Show="False" Graph="0" Invert="False" />
+      <A2D_4 Show="False" Graph="0" Invert="False" />
+      <A2D_5 Show="False" Graph="0" Invert="False" />
+      <A2D_6 Show="False" Graph="0" Invert="False" />
+      <A2D_7 Show="False" Graph="0" Invert="False" />
+      <Latitude Show="False" Graph="0" Invert="False" />
+      <Longitude Show="False" Graph="0" Invert="False" />
+      <Speed-GPS Show="False" Graph="0" Invert="False" />
+      <Heading-GPS Show="False" Graph="0" Invert="False" />
+      <Distance-GPS Show="False" Graph="0" Invert="False" />
+      <DeltaTime Show="False" Graph="0" Invert="False" />
+    </Channels>
+  </Strip_Chart>
+  <Track_Map>
+    <X_Axis Name="Longitude" ID="0">
+      <Item0>Longitude</Item0>
+      <Item1>Latitude</Item1>
+    </X_Axis>
+    <DisplayMode Name="Absolute" ID="0" ShowOverlay="True" />
+    <Channels>
+      <Latitude Show="False" Graph="0" Invert="False" />
+      <Longitude Show="False" Graph="0" Invert="False" />
+    </Channels>
+  </Track_Map>
+  <Traction_Circle>
+    <X_Axis Name="gX" ID="0">
+      <Item0>gX</Item0>
+      <Item1>gY</Item1>
+      <Item2>gZ</Item2>
+    </X_Axis>
+    <DisplayMode Name="Absolute" ID="0" ShowOverlay="True" />
+    <Channels>
+      <gX Show="False" Graph="0" Invert="False" />
+      <gY Show="False" Graph="0" Invert="False" />
+      <gZ Show="False" Graph="0" Invert="False" />
+    </Channels>
+  </Traction_Circle>
+</Setup>
