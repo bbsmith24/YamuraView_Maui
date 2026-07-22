@@ -96,6 +96,19 @@ public partial class MainPage : ContentPage
     private readonly HashSet<string> autoloadKnownFiles = new(StringComparer.OrdinalIgnoreCase);
     private IDispatcherTimer? autoloadTimer;
 
+    // Replay (VCR-style playback): a timer advances the Strip Chart's cursor through the run,
+    // which drives the box cursors on the Track Map/Traction Circle exactly like manual
+    // scrubbing. Speed is range-relative (not real-time), so it behaves the same whatever the
+    // Strip Chart X axis is - at 1x the cursor crosses the whole visible range in
+    // BaseTraverseSeconds; the speed multiplier scales that.
+    private IDispatcherTimer? replayTimer;
+    private bool replayPlaying;
+    private float replaySpeed = 1f;
+    private bool replayLoop;
+    private DateTime replayLastTick;
+    private const double ReplayFrameMs = 30; // ~33 fps
+    private const float BaseTraverseSeconds = 20f; // full range crossed in this many seconds at 1x
+
     public MainPage()
     {
         InitializeComponent();
@@ -195,6 +208,8 @@ public partial class MainPage : ContentPage
             }
         };
 #endif
+
+        ReplaySpeedPicker.SelectedIndex = 2; // 1x (also sets replaySpeed via its handler)
 
         StartAutoload();
     }
@@ -725,6 +740,162 @@ public partial class MainPage : ContentPage
             TrackMapView.Invalidate();
             TractionCircleView.Invalidate();
         }
+    }
+
+    // ===== Replay (VCR) controls =====
+
+    /// <summary>Top-bar toggle: shows/hides the VCR control bar under the Strip Chart. Turning
+    /// replay off also stops any in-progress playback.</summary>
+    private void OnReplayToggleClicked(object? sender, EventArgs e)
+    {
+        bool on = !ReplayControls.IsVisible;
+        ReplayControls.IsVisible = on;
+        ReplayToggleButton.Text = on ? "Replay: On" : "Replay: Off";
+        if (!on)
+        {
+            PauseReplay();
+        }
+    }
+
+    /// <summary>The axis-space (seconds, for the Time axis) window replay plays through: the
+    /// current zoom window if zoomed, otherwise the full data range. Null when nothing is
+    /// plotted or the range is degenerate.</summary>
+    private (float Min, float Max)? ReplayRange()
+    {
+        float? dataMin = stripChartDrawable.DataMinX;
+        float? dataMax = stripChartDrawable.DataMaxX;
+        if (!dataMin.HasValue || !dataMax.HasValue)
+        {
+            return null;
+        }
+        float min = stripChartDrawable.ZoomMinX ?? dataMin.Value;
+        float max = stripChartDrawable.ZoomMaxX ?? dataMax.Value;
+        return max > min ? (min, max) : null;
+    }
+
+    private void OnReplayPlayPause(object? sender, EventArgs e)
+    {
+        if (replayPlaying)
+        {
+            PauseReplay();
+            return;
+        }
+        if (ReplayRange() is not (float min, float max))
+        {
+            return; // nothing to play
+        }
+        // resume from the current cursor, unless it's unset or parked at the end
+        float? cursor = stripChartDrawable.CursorTime;
+        if (!cursor.HasValue || cursor.Value < min || cursor.Value >= max)
+        {
+            SetCursorTime(min);
+        }
+        replayTimer ??= CreateReplayTimer();
+        replayLastTick = DateTime.UtcNow;
+        replayPlaying = true;
+        ReplayPlayPauseButton.Text = "⏸";
+        replayTimer.Start();
+    }
+
+    private void PauseReplay()
+    {
+        replayPlaying = false;
+        replayTimer?.Stop();
+        ReplayPlayPauseButton.Text = "▶";
+    }
+
+    private IDispatcherTimer CreateReplayTimer()
+    {
+        IDispatcherTimer timer = Dispatcher.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(ReplayFrameMs);
+        timer.Tick += OnReplayTick;
+        return timer;
+    }
+
+    private void OnReplayTick(object? sender, EventArgs e)
+    {
+        if (ReplayRange() is not (float min, float max))
+        {
+            PauseReplay();
+            return;
+        }
+        // advance by real elapsed time so playback speed is independent of frame rate
+        DateTime now = DateTime.UtcNow;
+        float dt = (float)(now - replayLastTick).TotalSeconds;
+        replayLastTick = now;
+
+        // advance a fraction of the visible range, so playback speed means the same thing
+        // regardless of what the X axis is (Time in seconds, Distance in feet, ...): at 1x the
+        // cursor crosses the whole range in BaseTraverseSeconds, scaled by the speed multiplier
+        float span = max - min;
+        float next = (stripChartDrawable.CursorTime ?? min) + span * (dt * replaySpeed / BaseTraverseSeconds);
+        if (next >= max)
+        {
+            if (replayLoop)
+            {
+                next = min + (next - min) % (max - min); // wrap, tolerant of a large dt
+            }
+            else
+            {
+                SetCursorTime(max);
+                PauseReplay();
+                return;
+            }
+        }
+        SetCursorTime(next);
+    }
+
+    private void OnReplayToStart(object? sender, EventArgs e)
+    {
+        if (ReplayRange() is (float min, float _))
+        {
+            SetCursorTime(min);
+            replayLastTick = DateTime.UtcNow; // keep playing smoothly if mid-playback
+        }
+    }
+
+    private void OnReplayToEnd(object? sender, EventArgs e)
+    {
+        if (ReplayRange() is (float _, float max))
+        {
+            PauseReplay();
+            SetCursorTime(max);
+        }
+    }
+
+    private void OnReplayStepBack(object? sender, EventArgs e) => ReplayStep(-1);
+    private void OnReplayStepForward(object? sender, EventArgs e) => ReplayStep(+1);
+
+    /// <summary>Nudges the cursor one step (0.5% of the visible range) and pauses playback -
+    /// stepping is a paused, frame-by-frame action.</summary>
+    private void ReplayStep(int direction)
+    {
+        if (ReplayRange() is not (float min, float max))
+        {
+            return;
+        }
+        PauseReplay();
+        float step = (max - min) / 200f;
+        float cursor = stripChartDrawable.CursorTime ?? min;
+        SetCursorTime(Math.Clamp(cursor + direction * step, min, max));
+    }
+
+    private void OnReplaySpeedChanged(object? sender, EventArgs e)
+    {
+        replaySpeed = ReplaySpeedPicker.SelectedIndex switch
+        {
+            0 => 0.25f,
+            1 => 0.5f,
+            3 => 2f,
+            4 => 4f,
+            _ => 1f,
+        };
+    }
+
+    private void OnReplayLoopToggle(object? sender, EventArgs e)
+    {
+        replayLoop = !replayLoop;
+        ReplayLoopButton.Text = replayLoop ? "Loop: On" : "Loop: Off";
     }
 
     /// <summary>

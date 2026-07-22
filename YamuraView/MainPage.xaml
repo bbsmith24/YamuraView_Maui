@@ -3,21 +3,33 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="YamuraView.MainPage">
 
+    <ContentPage.Resources>
+        <!-- compact sizing and a light-grey fill so the toolbar/VCR buttons stand out from
+             the page background -->
+        <Style TargetType="Button">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="BackgroundColor" Value="#D9D9D9" />
+            <Setter Property="TextColor" Value="#222222" />
+        </Style>
+    </ContentPage.Resources>
+
     <!-- Custom top bar instead of ContentPage.ToolbarItems: ToolbarItem has no FontSize
          property (it's a native per-platform toolbar button), so plain Buttons are used here
          to get bigger, consistently-sized menu text across platforms. -->
     <Grid Padding="12" RowDefinitions="Auto,*" RowSpacing="8">
 
         <HorizontalStackLayout Grid.Row="0" Spacing="8">
-            <Button Text="Open" FontSize="16" Clicked="OnOpenFilesClicked" />
-            <Button Text="Strip Chart Channels" FontSize="16" Clicked="OnSelectStripChartChannelsClicked" />
-            <Button Text="Track Map Channels" FontSize="16" Clicked="OnSelectTrackMapChannelsClicked" />
-            <Button Text="Traction Circle Channels" FontSize="16" Clicked="OnSelectTractionCircleChannelsClicked" />
-            <Button Text="Zoom All" FontSize="16" Clicked="OnZoomAllClicked" />
-            <Button Text="Align Runs" FontSize="16" Clicked="OnAlignRunsClicked" />
-            <Button Text="Delta Time" FontSize="16" Clicked="OnDeltaTimeClicked" />
-            <Button Text="Settings" FontSize="16" Clicked="OnSettingsClicked" />
-            <Button Text="About" FontSize="16" Clicked="OnAboutClicked" />
+            <Button Text="Open" Clicked="OnOpenFilesClicked" />
+            <Button Text="Strip Chart Channels" Clicked="OnSelectStripChartChannelsClicked" />
+            <Button Text="Track Map Channels" Clicked="OnSelectTrackMapChannelsClicked" />
+            <Button Text="Traction Circle Channels" Clicked="OnSelectTractionCircleChannelsClicked" />
+            <Button Text="Zoom All" Clicked="OnZoomAllClicked" />
+            <Button x:Name="ReplayToggleButton" Text="Replay: Off" Clicked="OnReplayToggleClicked" />
+            <Button Text="Align Runs" Clicked="OnAlignRunsClicked" />
+            <Button Text="Delta Time" Clicked="OnDeltaTimeClicked" />
+            <Button Text="Settings" Clicked="OnSettingsClicked" />
+            <Button Text="About" Clicked="OnAboutClicked" />
         </HorizontalStackLayout>
 
         <!-- Strip Chart (left) | Track Map over Traction Circle (right) - same split as the WinForms app -->
@@ -28,7 +40,7 @@
                     StrokeThickness="1"
                     StrokeShape="RoundRectangle 8"
                     Padding="4">
-                <Grid RowDefinitions="*,Auto">
+                <Grid RowDefinitions="*,Auto,Auto">
                     <GraphicsView Grid.Row="0" x:Name="StripChartView" />
                     <!-- pans the drag-to-zoom window; only shown while zoomed in -->
                     <Slider Grid.Row="1"
@@ -37,6 +49,29 @@
                             HeightRequest="24"
                             Margin="0,2,0,0"
                             ValueChanged="OnStripChartScrollBarValueChanged" />
+                    <!-- Replay (VCR) controls: animate the time cursor through the run.
+                         Drives the same cursor as mouse scrubbing, so all three charts follow.
+                         Hidden until the top-bar "Replay" toggle turns it on. -->
+                    <HorizontalStackLayout Grid.Row="2" x:Name="ReplayControls" IsVisible="False" Spacing="6" Margin="0,4,0,0" HorizontalOptions="Center">
+                        <Button x:Name="ReplayToStartButton" Text="⏮" Padding="8,2" Clicked="OnReplayToStart" />
+                        <Button x:Name="ReplayStepBackButton" Text="◀◀" Padding="8,2" Clicked="OnReplayStepBack" />
+                        <Button x:Name="ReplayPlayPauseButton" Text="▶" Padding="12,2" Clicked="OnReplayPlayPause" />
+                        <Button x:Name="ReplayStepForwardButton" Text="▶▶" Padding="8,2" Clicked="OnReplayStepForward" />
+                        <Button x:Name="ReplayToEndButton" Text="⏭" Padding="8,2" Clicked="OnReplayToEnd" />
+                        <Label Text="Speed" VerticalOptions="Center" Margin="8,0,0,0" />
+                        <Picker x:Name="ReplaySpeedPicker" WidthRequest="80" SelectedIndexChanged="OnReplaySpeedChanged">
+                            <Picker.ItemsSource>
+                                <x:Array Type="{x:Type x:String}">
+                                    <x:String>0.25x</x:String>
+                                    <x:String>0.5x</x:String>
+                                    <x:String>1x</x:String>
+                                    <x:String>2x</x:String>
+                                    <x:String>4x</x:String>
+                                </x:Array>
+                            </Picker.ItemsSource>
+                        </Picker>
+                        <Button x:Name="ReplayLoopButton" Text="Loop: Off" Clicked="OnReplayLoopToggle" />
+                    </HorizontalStackLayout>
                 </Grid>
             </Border>
 
