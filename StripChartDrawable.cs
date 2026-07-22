@@ -553,10 +553,13 @@ public class StripChartDrawable : IDrawable
             bandChannelNames[g] = new List<string>();
         }
 
-        bool pointMode = DisplayMode == ChartDisplayMode.Point;
+        // LinePoint draws both; a single point still shows in any points mode, but a line
+        // needs two - so the legend's minimum-count test keys off whether points draw
+        bool drawPoints = DisplayMode is ChartDisplayMode.Point or ChartDisplayMode.LinePoint;
+        bool drawLine = DisplayMode is ChartDisplayMode.Line or ChartDisplayMode.LinePoint;
         foreach ((_, string channelName, List<(float X, float Y)> points) in series)
         {
-            if (points.Count < (pointMode ? 1 : 2))
+            if (points.Count < (drawPoints ? 1 : 2))
             {
                 continue;
             }
@@ -568,62 +571,8 @@ public class StripChartDrawable : IDrawable
             }
         }
 
-        if (pointMode)
-        {
-            // visible pixel positions are cached like the line-mode paths - cursor-only
-            // repaints just replay them instead of rescaling every data point. The
-            // visibility margin is the stepper's max pen width, so the cache stays valid
-            // when the pen width changes (radius is still looked up at draw time).
-            const float maxPenWidth = 5f;
-            int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX);
-            if (pointKey != cachedPointKey)
-            {
-                cachedPointSeries = new();
-                foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
-                {
-                    if (points.Count == 0)
-                    {
-                        continue;
-                    }
-                    int g = GraphIndexFor(channelName);
-                    bool inverted = IsInverted(channelName);
-                    List<(float X, float Y)> pixels = new();
-                    float lastPx = float.MinValue, lastPy = float.MinValue;
-                    foreach ((float x, float y) in points)
-                    {
-                        float px = ScaleX(x);
-                        if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth)
-                        {
-                            continue; // outside the visible X window (when zoomed)
-                        }
-                        float py = ScaleYForChannel(g, y, inverted);
-                        if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
-                        {
-                            continue; // sub-pixel duplicate of the previous drawn point
-                        }
-                        pixels.Add((px, py));
-                        lastPx = px;
-                        lastPy = py;
-                    }
-                    if (pixels.Count > 0)
-                    {
-                        cachedPointSeries.Add((run, channelName, pixels));
-                    }
-                }
-                cachedPointKey = pointKey;
-            }
-
-            foreach ((RunData run, string channelName, List<(float X, float Y)> pixels) in cachedPointSeries)
-            {
-                float penWidth = PenWidthFor(channelName);
-                canvas.FillColor = ColorFor(run, channelName);
-                foreach ((float px, float py) in pixels)
-                {
-                    canvas.FillCircle(px, py, penWidth);
-                }
-            }
-        }
-        else
+        // lines first so points sit on top of them in LinePoint mode
+        if (drawLine)
         {
             int pathKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX);
             if (pathKey != cachedPathKey)
@@ -693,6 +642,62 @@ public class StripChartDrawable : IDrawable
                 canvas.StrokeColor = ColorFor(run, channelName);
                 canvas.StrokeSize = PenWidthFor(channelName);
                 canvas.DrawPath(path);
+            }
+        }
+
+        if (drawPoints)
+        {
+            // visible pixel positions are cached like the line-mode paths - cursor-only
+            // repaints just replay them instead of rescaling every data point. The
+            // visibility margin is the stepper's max pen width, so the cache stays valid
+            // when the pen width changes (radius is still looked up at draw time).
+            const float maxPenWidth = 5f;
+            int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX);
+            if (pointKey != cachedPointKey)
+            {
+                cachedPointSeries = new();
+                foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
+                {
+                    if (points.Count == 0)
+                    {
+                        continue;
+                    }
+                    int g = GraphIndexFor(channelName);
+                    bool inverted = IsInverted(channelName);
+                    List<(float X, float Y)> pixels = new();
+                    float lastPx = float.MinValue, lastPy = float.MinValue;
+                    foreach ((float x, float y) in points)
+                    {
+                        float px = ScaleX(x);
+                        if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth)
+                        {
+                            continue; // outside the visible X window (when zoomed)
+                        }
+                        float py = ScaleYForChannel(g, y, inverted);
+                        if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                        {
+                            continue; // sub-pixel duplicate of the previous drawn point
+                        }
+                        pixels.Add((px, py));
+                        lastPx = px;
+                        lastPy = py;
+                    }
+                    if (pixels.Count > 0)
+                    {
+                        cachedPointSeries.Add((run, channelName, pixels));
+                    }
+                }
+                cachedPointKey = pointKey;
+            }
+
+            foreach ((RunData run, string channelName, List<(float X, float Y)> pixels) in cachedPointSeries)
+            {
+                float penWidth = PenWidthFor(channelName);
+                canvas.FillColor = ColorFor(run, channelName);
+                foreach ((float px, float py) in pixels)
+                {
+                    canvas.FillCircle(px, py, penWidth);
+                }
             }
         }
 

@@ -45,13 +45,15 @@ public partial class SettingsPage : ContentPage
         TractionCircleTrailPointsEntry.Text = tractionCircleTrailPoints.ToString();
         TrackMapGridSpacingEntry.Text = trackMapGridSpacing.ToString();
         TrackMapGridUnitPicker.SelectedIndex = trackMapGridUnit == GridSpacingUnit.Meters ? 1 : 0;
-        StripChartDisplayModePicker.SelectedIndex = stripChartDisplayMode == ChartDisplayMode.Point ? 1 : 0;
-        TrackMapDisplayModePicker.SelectedIndex = trackMapDisplayMode == ChartDisplayMode.Point ? 1 : 0;
+        // both pickers list Line=0, Point=1, Line + Points=2
+        StripChartDisplayModePicker.SelectedIndex = LinePointIndex(stripChartDisplayMode);
+        TrackMapDisplayModePicker.SelectedIndex = LinePointIndex(trackMapDisplayMode);
         TractionCircleDisplayModePicker.SelectedIndex = tractionCircleDisplayMode switch
         {
             ChartDisplayMode.Point => 1,
-            ChartDisplayMode.CursorOnly => 2,
-            ChartDisplayMode.CursorTrail => 3,
+            ChartDisplayMode.LinePoint => 2,
+            ChartDisplayMode.CursorOnly => 3,
+            ChartDisplayMode.CursorTrail => 4,
             _ => 0,
         };
 
@@ -138,6 +140,22 @@ public partial class SettingsPage : ContentPage
         }
     }
 
+    // shared Line=0 / Point=1 / Line + Points=2 mapping for the Strip Chart and Track Map
+    // pickers (the Traction Circle picker adds its cursor modes and maps inline)
+    private static int LinePointIndex(ChartDisplayMode mode) => mode switch
+    {
+        ChartDisplayMode.Point => 1,
+        ChartDisplayMode.LinePoint => 2,
+        _ => 0,
+    };
+
+    private static ChartDisplayMode LinePointMode(int index) => index switch
+    {
+        1 => ChartDisplayMode.Point,
+        2 => ChartDisplayMode.LinePoint,
+        _ => ChartDisplayMode.Line,
+    };
+
     private async void OnBrowseConfigClicked(object? sender, EventArgs e)
     {
         try
@@ -207,13 +225,14 @@ public partial class SettingsPage : ContentPage
         }
         string autoloadFolder = AutoloadFolderEntry.Text?.Trim() ?? "";
         Color[] colors = swatchButtons.Select(b => b.BackgroundColor).ToArray();
-        ChartDisplayMode stripChartDisplayMode = StripChartDisplayModePicker.SelectedIndex == 1 ? ChartDisplayMode.Point : ChartDisplayMode.Line;
-        ChartDisplayMode trackMapDisplayMode = TrackMapDisplayModePicker.SelectedIndex == 1 ? ChartDisplayMode.Point : ChartDisplayMode.Line;
+        ChartDisplayMode stripChartDisplayMode = LinePointMode(StripChartDisplayModePicker.SelectedIndex);
+        ChartDisplayMode trackMapDisplayMode = LinePointMode(TrackMapDisplayModePicker.SelectedIndex);
         ChartDisplayMode tractionCircleDisplayMode = TractionCircleDisplayModePicker.SelectedIndex switch
         {
             1 => ChartDisplayMode.Point,
-            2 => ChartDisplayMode.CursorOnly,
-            3 => ChartDisplayMode.CursorTrail,
+            2 => ChartDisplayMode.LinePoint,
+            3 => ChartDisplayMode.CursorOnly,
+            4 => ChartDisplayMode.CursorTrail,
             _ => ChartDisplayMode.Line,
         };
         // unparseable or non-positive input keeps the previous value rather than erroring

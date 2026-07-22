@@ -39,8 +39,8 @@ public class XYChartDrawable : IDrawable
     private const float MaxReferenceG = 1.5f;
 
     /// <summary>In <see cref="ChartDisplayMode.CursorTrail"/> mode, how many data points
-    /// before and after the cursor point the trail line extends (so the trail spans up to
-    /// 2N+1 points).</summary>
+    /// before the cursor point the trail line extends - the trail runs from N points earlier
+    /// in time up to the cursor point (up to N+1 points), with no look-ahead.</summary>
     public int CursorTrailPointCount { get; set; } = 25;
 
     /// <summary>Spacing of a light-grey background grid as a physical distance in
@@ -498,123 +498,132 @@ public class XYChartDrawable : IDrawable
             // full traces hidden - only the reference overlay, the box cursor, and (in
             // CursorTrail mode) the short trail around the cursor draw below
         }
-        else if (DisplayMode == ChartDisplayMode.Point)
-        {
-            // visible pixel positions are cached like the line-mode paths - cursor-only
-            // repaints just replay them instead of rescaling every data point. The
-            // visibility margin is the stepper's max pen width, so the cache stays valid
-            // when the pen width changes (radius is still looked up at draw time).
-            const float maxPenWidth = 5f;
-            int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
-            if (pointKey != cachedPointKey)
-            {
-                cachedPointRuns = new();
-                foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
-                {
-                    bool invertedRun = IsInverted(run.runName);
-                    List<(float X, float Y)> pixels = new();
-                    float lastPx = float.MinValue, lastPy = float.MinValue;
-                    foreach ((_, float xVal, float yVal) in runPoints)
-                    {
-                        float px = scaleX(xVal);
-                        float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
-                        if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth ||
-                            py < plotTop - maxPenWidth || py > plotBottom + maxPenWidth)
-                        {
-                            continue; // outside the visible plot (when zoomed)
-                        }
-                        if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
-                        {
-                            continue; // sub-pixel duplicate of the previous drawn point
-                        }
-                        pixels.Add((px, py));
-                        lastPx = px;
-                        lastPy = py;
-                    }
-                    if (pixels.Count > 0)
-                    {
-                        cachedPointRuns.Add((run, runIdx, pixels));
-                    }
-                }
-                cachedPointKey = pointKey;
-            }
-
-            foreach ((RunData run, int runIdx, List<(float X, float Y)> pixels) in cachedPointRuns)
-            {
-                float penWidth = PenWidthFor(run.runName);
-                canvas.FillColor = ColorFor(runIdx, run.runName);
-                foreach ((float px, float py) in pixels)
-                {
-                    canvas.FillCircle(px, py, penWidth);
-                }
-            }
-        }
         else
         {
-            int pathKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
-            if (pathKey != cachedPathKey)
+            // LinePoint draws both, points on top of the line
+            bool drawPoints = DisplayMode is ChartDisplayMode.Point or ChartDisplayMode.LinePoint;
+            bool drawLine = DisplayMode is ChartDisplayMode.Line or ChartDisplayMode.LinePoint;
+
+            // lines first so points sit on top of them in LinePoint mode
+            if (drawLine)
             {
-                cachedPaths = new();
-                foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
+                int pathKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
+                if (pathKey != cachedPathKey)
                 {
-                    bool invertedRun = IsInverted(run.runName);
-                    PathF path = new();
-                    // no figure is opened until there's a visible segment to draw: every
-                    // MoveTo must be followed by at least one LineTo before the next MoveTo,
-                    // or Win2D's path builder throws ("A call to BeginFigure occurred, when
-                    // the figure was already begun") - which happened when a trace's first
-                    // point sat outside the zoom window
-                    bool haveLast = false;
-                    bool pendingMove = true;
-                    float lastPx = 0, lastPy = 0;
-                    foreach ((_, float xVal, float yVal) in runPoints)
+                    cachedPaths = new();
+                    foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
                     {
-                        float px = scaleX(xVal);
-                        float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
-                        if (!haveLast)
+                        bool invertedRun = IsInverted(run.runName);
+                        PathF path = new();
+                        // no figure is opened until there's a visible segment to draw: every
+                        // MoveTo must be followed by at least one LineTo before the next MoveTo,
+                        // or Win2D's path builder throws ("A call to BeginFigure occurred, when
+                        // the figure was already begun") - which happened when a trace's first
+                        // point sat outside the zoom window
+                        bool haveLast = false;
+                        bool pendingMove = true;
+                        float lastPx = 0, lastPy = 0;
+                        foreach ((_, float xVal, float yVal) in runPoints)
                         {
-                            haveLast = true;
-                        }
-                        else if ((px < plotLeft && lastPx < plotLeft) || (px > plotRight && lastPx > plotRight) ||
-                                 (py < plotTop && lastPy < plotTop) || (py > plotBottom && lastPy > plotBottom))
-                        {
-                            // both endpoints off the same side of the plot (zoomed): the whole
-                            // segment is invisible - drop it and restart the path on re-entry
-                            pendingMove = true;
-                        }
-                        else if (!pendingMove && Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
-                        {
-                            continue; // sub-pixel move - drop it, keep the previous point as anchor
-                        }
-                        else
-                        {
-                            if (pendingMove)
+                            float px = scaleX(xVal);
+                            float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
+                            if (!haveLast)
                             {
-                                // start (or restart) the figure from the previous point so the
-                                // first/crossing segment enters at the correct angle
-                                path.MoveTo(lastPx, lastPy);
-                                pendingMove = false;
+                                haveLast = true;
                             }
-                            path.LineTo(px, py);
+                            else if ((px < plotLeft && lastPx < plotLeft) || (px > plotRight && lastPx > plotRight) ||
+                                     (py < plotTop && lastPy < plotTop) || (py > plotBottom && lastPy > plotBottom))
+                            {
+                                // both endpoints off the same side of the plot (zoomed): the whole
+                                // segment is invisible - drop it and restart the path on re-entry
+                                pendingMove = true;
+                            }
+                            else if (!pendingMove && Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                            {
+                                continue; // sub-pixel move - drop it, keep the previous point as anchor
+                            }
+                            else
+                            {
+                                if (pendingMove)
+                                {
+                                    // start (or restart) the figure from the previous point so the
+                                    // first/crossing segment enters at the correct angle
+                                    path.MoveTo(lastPx, lastPy);
+                                    pendingMove = false;
+                                }
+                                path.LineTo(px, py);
+                            }
+                            lastPx = px;
+                            lastPy = py;
                         }
-                        lastPx = px;
-                        lastPy = py;
+                        if (path.Count > 0)
+                        {
+                            cachedPaths.Add((run, runIdx, path));
+                        }
                     }
-                    if (path.Count > 0)
-                    {
-                        cachedPaths.Add((run, runIdx, path));
-                    }
+                    cachedPathKey = pathKey;
                 }
-                cachedPathKey = pathKey;
+
+                // color and pen width are looked up at stroke time, so changing them doesn't
+                // invalidate the cached geometry
+                foreach ((RunData run, int runIdx, PathF path) in cachedPaths)
+                {
+                    canvas.StrokeColor = ColorFor(runIdx, run.runName);
+                    canvas.StrokeSize = PenWidthFor(run.runName);
+                    canvas.DrawPath(path);
+                }
             }
 
-            // color and pen width are looked up at stroke time, so changing them doesn't
-            // invalidate the cached geometry
-            foreach ((RunData run, int runIdx, PathF path) in cachedPaths)
+            if (drawPoints)
             {
-                canvas.StrokeColor = ColorFor(runIdx, run.runName);
-                canvas.StrokeSize = PenWidthFor(run.runName);
-                canvas.DrawPath(path);
+                // visible pixel positions are cached like the line-mode paths - cursor-only
+                // repaints just replay them instead of rescaling every data point. The
+                // visibility margin is the stepper's max pen width, so the cache stays valid
+                // when the pen width changes (radius is still looked up at draw time).
+                const float maxPenWidth = 5f;
+                int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
+                if (pointKey != cachedPointKey)
+                {
+                    cachedPointRuns = new();
+                    foreach ((RunData run, int runIdx, List<(float Time, float X, float Y)> runPoints) in cachedRunPoints)
+                    {
+                        bool invertedRun = IsInverted(run.runName);
+                        List<(float X, float Y)> pixels = new();
+                        float lastPx = float.MinValue, lastPy = float.MinValue;
+                        foreach ((_, float xVal, float yVal) in runPoints)
+                        {
+                            float px = scaleX(xVal);
+                            float py = invertedRun ? plotTop + plotBottom - scaleY(yVal) : scaleY(yVal);
+                            if (px < plotLeft - maxPenWidth || px > plotRight + maxPenWidth ||
+                                py < plotTop - maxPenWidth || py > plotBottom + maxPenWidth)
+                            {
+                                continue; // outside the visible plot (when zoomed)
+                            }
+                            if (Math.Abs(px - lastPx) < 0.5f && Math.Abs(py - lastPy) < 0.5f)
+                            {
+                                continue; // sub-pixel duplicate of the previous drawn point
+                            }
+                            pixels.Add((px, py));
+                            lastPx = px;
+                            lastPy = py;
+                        }
+                        if (pixels.Count > 0)
+                        {
+                            cachedPointRuns.Add((run, runIdx, pixels));
+                        }
+                    }
+                    cachedPointKey = pointKey;
+                }
+
+                foreach ((RunData run, int runIdx, List<(float X, float Y)> pixels) in cachedPointRuns)
+                {
+                    float penWidth = PenWidthFor(run.runName);
+                    canvas.FillColor = ColorFor(runIdx, run.runName);
+                    foreach ((float px, float py) in pixels)
+                    {
+                        canvas.FillCircle(px, py, penWidth);
+                    }
+                }
             }
         }
 
@@ -640,11 +649,12 @@ public class XYChartDrawable : IDrawable
 
                 if (DisplayMode == ChartDisplayMode.CursorTrail && CursorTrailPointCount > 0)
                 {
-                    // a short line through only the points surrounding the cursor - rebuilt
-                    // every repaint since it moves with the cursor, but it's at most 2N+1
-                    // points so there's nothing worth caching
+                    // a short line through only the points leading up to the cursor (earlier
+                    // in time, not the look-ahead), ending at the cursor point - rebuilt every
+                    // repaint since it moves with the cursor, but it's at most N+1 points so
+                    // there's nothing worth caching
                     int first = Math.Max(0, cursorIdx - CursorTrailPointCount);
-                    int last = Math.Min(runPoints.Count - 1, cursorIdx + CursorTrailPointCount);
+                    int last = cursorIdx;
                     if (last > first)
                     {
                         PathF trail = new();

@@ -29,6 +29,7 @@
                         <x:Array Type="{x:Type x:String}">
                             <x:String>Line</x:String>
                             <x:String>Point</x:String>
+                            <x:String>Line + Points</x:String>
                         </x:Array>
                     </Picker.ItemsSource>
                 </Picker>
@@ -38,6 +39,7 @@
                         <x:Array Type="{x:Type x:String}">
                             <x:String>Line</x:String>
                             <x:String>Point</x:String>
+                            <x:String>Line + Points</x:String>
                         </x:Array>
                     </Picker.ItemsSource>
                 </Picker>
@@ -59,6 +61,7 @@
                         <x:Array Type="{x:Type x:String}">
                             <x:String>Line</x:String>
                             <x:String>Point</x:String>
+                            <x:String>Line + Points</x:String>
                             <x:String>Cursor Only</x:String>
                             <x:String>Cursor Trail</x:String>
                         </x:Array>
