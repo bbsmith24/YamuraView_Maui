@@ -287,3 +287,53 @@ xcrun stapler staple YamuraView.app
 - **Clean rebuild** — delete the `bin/` and `obj/` folders under both
   `YamuraView/` and `YamuraView.Core/`; `dotnet clean` alone often isn't
   enough for MAUI multi-targeting issues.
+- **`codesign` fails with "resource fork, Finder information, or similar
+  detritus not allowed"** — the checkout is inside an iCloud-synced folder.
+  With *Desktop & Documents Folders* sync enabled, `fileproviderd` stamps
+  `com.apple.FinderInfo` (the bundle bit) on every `.app` it sees, and
+  `codesign` refuses to sign a bundle carrying it. `xattr -cr` does **not**
+  fix it — the daemon re-adds the attribute within seconds, so the next
+  build fails identically. Keep the repo outside `~/Documents` and
+  `~/Desktop`; this one lives in `~/dev/YamuraView_Maui` for that reason.
+- **"Open" does nothing on Mac Catalyst** — the app is missing the
+  `com.apple.security.files.user-selected.read-write` entitlement. Without it
+  `UIDocumentPickerViewController` presents, but its view stays hidden, no
+  panel window is ever created, and the picker task never completes, so the
+  button looks dead with no error anywhere. Every other button still works,
+  which makes it look like an Open-specific bug rather than a signing one.
+  See *Entitlements and the file picker* below.
+
+### Entitlements and the file picker (Mac Catalyst)
+
+The Open button needs `com.apple.security.files.user-selected.read-write`.
+This was verified by bisecting the entitlements on an otherwise identical
+build and watching the window server for a panel window:
+
+| Entitlements on the bundle | Open panel appears? |
+| -------------------------- | ------------------- |
+| none (MAUI's Debug default) | no |
+| `app-sandbox` + `network.client` | no |
+| `app-sandbox` + `network.client` + `user-selected.read-write` | yes |
+| `user-selected.read-write` alone | yes |
+
+App Sandbox is *not* required for the picker — only the user-selected-files
+entitlement is. Two files cover the two cases:
+
+- [Entitlements.Unsandboxed.plist](YamuraView/Platforms/MacCatalyst/Entitlements.Unsandboxed.plist) —
+  user-selected-files only, no sandbox. The `.csproj` makes this the default
+  for **every** Mac Catalyst build, because MAUI otherwise signs them ad-hoc
+  with no entitlements at all. This covers both local Debug runs and the
+  unsigned universal `.app`, which had the same dead Open button. The sandbox
+  is deliberately left off so the config file and autoload folder keep their
+  arbitrary-path access.
+- [Entitlements.plist](YamuraView/Platforms/MacCatalyst/Entitlements.plist) —
+  App Sandbox on (required by the Mac App Store) plus the network and
+  user-selected-files entitlements. The App Store `.pkg` and Developer ID
+  commands above pass this explicitly with
+  `-p:CodesignEntitlements=...`; a global property set on the command line
+  overrides the `.csproj` default, so those builds still get the sandbox.
+
+Because only the App Store / Developer ID builds are sandboxed, the config
+file path and autoload folder need re-checking before an App Store submission
+— a sandboxed app can only reach paths the user picked, and both of those are
+arbitrary paths remembered across runs.

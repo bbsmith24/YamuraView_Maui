@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <!-- Mac Catalyst builds that are NOT going through the Mac App Store: local Debug runs
+         and the unsigned universal .app. MAUI signs both ad-hoc with no entitlements at all,
+         and without the user-selected-files entitlement the "Open" button's
+         UIDocumentPickerViewController presents but never creates its panel - no window
+         appears and the picker task never completes, so the button looks dead with no error
+         logged anywhere.
+
+         Deliberately does NOT enable com.apple.security.app-sandbox: the sandbox is only
+         needed to ship through the Mac App Store (see Entitlements.plist), and turning it on
+         here would cut off the app's arbitrary-path access to the config file and the
+         autoload folder.
+
+         The App Store and Developer ID publish commands in BUILDING-iOS-Mac.md pass
+         -p:CodesignEntitlements=Platforms/MacCatalyst/Entitlements.plist explicitly, which
+         overrides the .csproj default and gives those builds the sandboxed entitlements. -->
+    <dict>
+        <key>com.apple.security.files.user-selected.read-write</key>
+        <true/>
+    </dict>
+</plist>

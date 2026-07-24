@@ -66,6 +66,20 @@
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
 	</PropertyGroup>
 
+	<!-- Mac Catalyst builds are signed ad-hoc with no entitlements at all by default, which
+	     breaks the "Open" button: without com.apple.security.files.user-selected.read-write
+	     the file picker presents but its panel is never created, so nothing appears on screen
+	     and the picker task never completes - the button just looks dead. This applies to
+	     Debug runs and to the unsigned universal .app alike, so default both to the
+	     sandbox-free entitlements file.
+	     The App Store (.pkg) and Developer ID publish commands in BUILDING-iOS-Mac.md pass
+	     -p:CodesignEntitlements=...\Entitlements.plist on the command line, and a global
+	     property set there overrides this default - so those builds still get App Sandbox. -->
+	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
+		<EnableCodeSigning>true</EnableCodeSigning>
+		<CodesignEntitlements>Platforms\MacCatalyst\Entitlements.Unsandboxed.plist</CodesignEntitlements>
+	</PropertyGroup>
+
 	<ItemGroup>
 		<!-- App Icon - Japanese flag: white background layer, red disc foreground -->
 		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#FFFFFF" />

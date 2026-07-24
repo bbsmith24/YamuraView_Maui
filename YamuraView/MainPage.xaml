@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-             x:Class="YamuraView.MainPage">
+             x:Class="YamuraView.MainPage"
+             Shell.NavBarIsVisible="False">
 
     <ContentPage.Resources>
         <!-- compact sizing and a light-grey fill so the toolbar/VCR buttons stand out from
@@ -17,7 +18,10 @@
     <!-- Custom top bar instead of ContentPage.ToolbarItems: ToolbarItem has no FontSize
          property (it's a native per-platform toolbar button), so plain Buttons are used here
          to get bigger, consistently-sized menu text across platforms. -->
-    <Grid Padding="12" RowDefinitions="Auto,*" RowSpacing="8">
+    <!-- SafeAreaEdges="All" replaces the deprecated ios:Page.UseSafeArea="True": it keeps the
+         content inset within every platform safe-area edge (title bar, notch, keyboard) on
+         iOS/Mac Catalyst, and is a no-op elsewhere. -->
+    <Grid Padding="12" RowDefinitions="Auto,*" RowSpacing="8" SafeAreaEdges="All">
 
         <HorizontalStackLayout Grid.Row="0" Spacing="8">
             <Button Text="Open" Clicked="OnOpenFilesClicked" />
