@@ -125,4 +125,33 @@ TROUBLESHOOTING
       The one-time certificate step (above) wasn't done on that machine,
       or the package was signed by a different certificate than the one
       the machine trusts.
+
+
+SHARED UI SETTINGS THAT ALSO AFFECT WINDOWS & ANDROID
+-----------------------------------------------------
+Most of the recent iOS/Mac Catalyst work (entitlements, the Entitlements
+*.plist files, the maccatalyst-only PropertyGroup in the .csproj) is Apple-
+only and does NOT touch the Windows or Android builds. But two lines in
+YamuraView\MainPage.xaml are cross-platform Microsoft.Maui.Controls
+properties, so they apply to every target - keep them in mind here:
+
+  Shell.NavBarIsVisible="False"  (on the ContentPage root)
+      The app uses Shell (AppShell), so this hides Shell's top navigation
+      bar on Windows and Android too, not just Apple. That's intended - the
+      app draws its own toolbar row (Open / Strip Chart / ... ) - but if a
+      Shell nav/title bar ever needs to come back on Windows or Android,
+      this is the line to change.
+
+  SafeAreaEdges="All"  (on the root Grid; replaced the old, now-deprecated
+                        ios:Page.UseSafeArea="True")
+      Windows: no-op - there are no safe-area insets / notch.
+      Android: .NET 10 MAUI runs edge-to-edge by default, so this keeps the
+      toolbar inset out from under the status / navigation bars. Generally
+      desirable; visually confirm on an Android device/emulator after any
+      layout change. iOS/Mac Catalyst: this is the real target - content is
+      positioned within all safe-area edges.
+
+Both compile identically on every platform (the XAML source generator emits
+the same code for all TFMs), so they can't break the Windows or Android build
+on their own - they only change layout/chrome.
 ==============================================================================
