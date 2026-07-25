@@ -25,6 +25,9 @@ Open a regular PowerShell window (no admin needed for CurrentUser scope) and run
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 If it prompts for confirmation, answer Y.
 
+May need to do this 
+$env:YAMURAVIEW_KEYSTORE_PASS = "your-keystore-password"
+
 Verify it took effect:
 Get-ExecutionPolicy -List
 You should see CurrentUser = RemoteSigned, and Get-ExecutionPolicy (effective policy) should report RemoteSigned since CurrentUser outranks LocalMachine's AllSigned.
