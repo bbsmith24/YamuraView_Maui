@@ -12,6 +12,7 @@ public partial class SettingsPage : ContentPage
     private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
     private readonly int initialTractionCircleTrailPoints;
     private readonly float initialTrackMapGridSpacing;
+    private readonly string initialAutoloadFolderPath;
 
     // one row per loaded channel name; channels with a filter but no loaded data keep
     // their entry in channelFilters untouched (no row is built for them)
@@ -40,6 +41,7 @@ public partial class SettingsPage : ContentPage
         this.channelFilters = new Dictionary<string, ChannelFilterSettings>(channelFilters);
         initialTractionCircleTrailPoints = tractionCircleTrailPoints;
         initialTrackMapGridSpacing = trackMapGridSpacing;
+        initialAutoloadFolderPath = autoloadFolderPath;
         ConfigPathEntry.Text = configFilePath;
         AutoloadFolderEntry.Text = autoloadFolderPath;
         TractionCircleTrailPointsEntry.Text = tractionCircleTrailPoints.ToString();
@@ -224,6 +226,37 @@ public partial class SettingsPage : ContentPage
             return;
         }
         string autoloadFolder = AutoloadFolderEntry.Text?.Trim() ?? "";
+        // when the user changes the autoload folder to a non-empty path, make sure it exists
+        // and can actually be read before saving it - an empty path is valid (autoload off).
+        // On any error, clear the path and warn rather than silently disabling autoload later.
+        if (!string.IsNullOrEmpty(autoloadFolder) && autoloadFolder != initialAutoloadFolderPath)
+        {
+            bool accessible;
+            try
+            {
+                // Directory.Exists swallows access errors (returns false); enumerating forces
+                // permission/path problems to surface as an exception we can report
+                accessible = Directory.Exists(autoloadFolder);
+                if (accessible)
+                {
+                    Directory.EnumerateFileSystemEntries(autoloadFolder).FirstOrDefault();
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log($"Autoload folder not accessible: {autoloadFolder}: {ex.Message}");
+                accessible = false;
+            }
+            if (!accessible)
+            {
+                autoloadFolder = "";
+                AutoloadFolderEntry.Text = "";
+                await DisplayAlertAsync(
+                    "Autoload Folder",
+                    "That folder doesn't exist or can't be accessed. The autoload folder has been cleared.",
+                    "OK");
+            }
+        }
         Color[] colors = swatchButtons.Select(b => b.BackgroundColor).ToArray();
         ChartDisplayMode stripChartDisplayMode = LinePointMode(StripChartDisplayModePicker.SelectedIndex);
         ChartDisplayMode trackMapDisplayMode = LinePointMode(TrackMapDisplayModePicker.SelectedIndex);
