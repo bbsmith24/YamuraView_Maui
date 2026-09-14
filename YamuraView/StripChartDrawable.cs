@@ -98,6 +98,28 @@ public class StripChartDrawable : IDrawable
     public float? ZoomMaxX { get; set; }
 
     /// <summary>
+    /// Draws the active track map's start/finish/sector crossings as vertical reference lines -
+    /// each run's crossing at its own axis position (so on a distance axis they line up across
+    /// runs, and on a time axis they fan out by how long each run took to reach them). Only shown
+    /// when a map is loaded (<see cref="DataLogger.AlignmentTrackMap"/>) and the X axis is Time or
+    /// a Distance channel. Start/Sector/Finish each have their own color (defaulting to the Track
+    /// Map overlay's green/gold/red); <see cref="TrackMapLineWidth"/> is shared. A short label
+    /// (Start / Finish / S1…) marks each distinct line once.
+    /// </summary>
+    public bool ShowTrackMapLines { get; set; }
+    public Color TrackMapStartColor { get; set; } = Colors.LimeGreen;
+    public Color TrackMapSectorColor { get; set; } = Colors.Gold;
+    public Color TrackMapFinishColor { get; set; } = Colors.Red;
+    public float TrackMapLineWidth { get; set; } = 1f;
+
+    private Color TrackMapColorFor(LineType type) => type switch
+    {
+        LineType.Start => TrackMapStartColor,
+        LineType.Finish => TrackMapFinishColor,
+        _ => TrackMapSectorColor,
+    };
+
+    /// <summary>
     /// Pixel X coordinates of an in-progress drag-to-zoom selection (both set while dragging),
     /// drawn as a translucent band; null when not dragging. Set by the page hosting this
     /// drawable from pointer-press/move/release events.
@@ -142,6 +164,13 @@ public class StripChartDrawable : IDrawable
     // every data point again
     private int? cachedPointKey;
     private List<(RunData Run, string ChannelName, List<(float X, float Y)> Pixels)> cachedPointSeries = new();
+
+    // track-map crossing positions in axis space (per run, per line), plus the label for the
+    // representative instance of each line. Recomputed only when the data fingerprint or the
+    // active map changes - not on cursor-only repaints. Each entry: axis-space X and an optional
+    // label (non-null only on one instance per distinct line, to avoid repeating "S1" per run).
+    private int? cachedTrackLineKey;
+    private List<(float AxisX, LineType Type, string? Label)> cachedTrackLines = new();
 
     private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float minX, float maxX)
     {
@@ -706,6 +735,37 @@ public class StripChartDrawable : IDrawable
             DrawLegend(canvas, plotLeft, BandTop(g), bandChannelNames[g]);
         }
 
+        // track-map start/finish/sector crossings as vertical reference lines (behind the cursor)
+        if (ShowTrackMapLines && DataLogger.AlignmentTrackMap is TrackMap trackMap &&
+            (xIsTime || XAxisChannel.StartsWith("Distance", StringComparison.OrdinalIgnoreCase)))
+        {
+            int trackLineKey = HashCode.Combine(fingerprint, System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(trackMap));
+            if (trackLineKey != cachedTrackLineKey)
+            {
+                RebuildTrackLines(trackMap, xIsTime);
+                cachedTrackLineKey = trackLineKey;
+            }
+            float lineWidth = TrackMapLineWidth > 0 ? TrackMapLineWidth : 1f;
+            foreach ((float axisX, LineType type, string? label) in cachedTrackLines)
+            {
+                float px = ScaleX(axisX);
+                if (px < plotLeft || px > plotRight)
+                {
+                    continue;
+                }
+                Color color = TrackMapColorFor(type);
+                canvas.StrokeColor = color;
+                canvas.StrokeSize = lineWidth;
+                canvas.DrawLine(px, plotTop, px, plotBottom);
+                if (label != null)
+                {
+                    canvas.FontColor = color;
+                    canvas.FontSize = 10;
+                    canvas.DrawString(label, px + 2, plotTop + 2, 40, 12, HorizontalAlignment.Left, VerticalAlignment.Top);
+                }
+            }
+        }
+
         if (CursorTime.HasValue)
         {
             float cursorX = ScaleX(Math.Clamp(CursorTime.Value, minX, maxX));
@@ -762,6 +822,93 @@ public class StripChartDrawable : IDrawable
             canvas.StrokeSize = 1;
             canvas.DrawRectangle(dragLeft, plotTop, dragRight - dragLeft, plotBottom - plotTop);
         }
+    }
+
+    /// <summary>
+    /// Rebuilds <see cref="cachedTrackLines"/>: every run's crossing of every map line, converted
+    /// to the current X axis (aligned time, or aligned distance interpolated on the axis channel).
+    /// One instance per distinct line - the one at the smallest axis position - carries the label.
+    /// </summary>
+    private void RebuildTrackLines(TrackMap map, bool xIsTime)
+    {
+        // per distinct line: all its crossing X positions across runs, so the leftmost gets labeled
+        Dictionary<TrackLine, List<float>> perLine = new();
+        foreach (RunData run in DataLogger.runData)
+        {
+            foreach (LineCrossing crossing in TrackMapGeometry.FindCrossings(run, map))
+            {
+                float? axisX;
+                if (xIsTime)
+                {
+                    axisX = crossing.Time + run.TimeOffset;
+                }
+                else
+                {
+                    float? rawDistance = run.channels.TryGetValue(XAxisChannel, out DataChannel? axisChan) && axisChan.DataPoints.Count > 0
+                        ? InterpolateAt(axisChan.DataPoints, crossing.Time)
+                        : null;
+                    axisX = rawDistance.HasValue ? rawDistance.Value + run.DistanceOffset : null;
+                }
+                if (!axisX.HasValue)
+                {
+                    continue;
+                }
+                if (!perLine.TryGetValue(crossing.Line, out List<float>? xs))
+                {
+                    xs = new List<float>();
+                    perLine[crossing.Line] = xs;
+                }
+                xs.Add(axisX.Value);
+            }
+        }
+
+        List<(float AxisX, LineType Type, string? Label)> result = new();
+        foreach ((TrackLine line, List<float> xs) in perLine)
+        {
+            string label = line.Type == LineType.Sector ? $"S{line.Order}" : line.Type.ToString();
+            float minAxisX = xs.Min();
+            foreach (float x in xs)
+            {
+                // label only the leftmost instance of this line (== the one at minAxisX)
+                result.Add((x, line.Type, x == minAxisX ? label : null));
+            }
+        }
+        cachedTrackLines = result;
+    }
+
+    /// <summary>Linear interpolation of a time-keyed channel at <paramref name="time"/>, clamped
+    /// to the channel's endpoints.</summary>
+    private static float InterpolateAt(SortedList<float, float> points, float time)
+    {
+        IList<float> keys = points.Keys;
+        IList<float> values = points.Values;
+        if (time <= keys[0])
+        {
+            return values[0];
+        }
+        if (time >= keys[^1])
+        {
+            return values[^1];
+        }
+        int lo = 0, hi = keys.Count - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (keys[mid] < time)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (keys[lo] == time || lo == 0)
+        {
+            return values[lo];
+        }
+        float t0 = keys[lo - 1], t1 = keys[lo];
+        return values[lo - 1] + (time - t0) / (t1 - t0) * (values[lo] - values[lo - 1]);
     }
 
     private static float FindNearestY(List<(float X, float Y)> points, float target)

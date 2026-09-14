@@ -25,12 +25,16 @@
 
         <HorizontalStackLayout Grid.Row="0" Spacing="8">
             <Button Text="Open" Clicked="OnOpenFilesClicked" />
+            <Button Text="Track Walk" Clicked="OnTrackWalkClicked" />
+            <Button Text="Track Map from Run" Clicked="OnTrackMapFromRunClicked" />
             <Button Text="Strip Chart Channels" Clicked="OnSelectStripChartChannelsClicked" />
             <Button Text="Track Map Channels" Clicked="OnSelectTrackMapChannelsClicked" />
             <Button Text="Traction Circle Channels" Clicked="OnSelectTractionCircleChannelsClicked" />
             <Button Text="Zoom All" Clicked="OnZoomAllClicked" />
             <Button x:Name="ReplayToggleButton" Text="Replay: Off" Clicked="OnReplayToggleClicked" />
             <Button Text="Align Runs" Clicked="OnAlignRunsClicked" />
+            <Button Text="Load Track Map" Clicked="OnLoadTrackMapClicked" />
+            <Button Text="Lap/Sector Times" Clicked="OnTrackTimingClicked" />
             <Button Text="Delta Time" Clicked="OnDeltaTimeClicked" />
             <Button Text="Settings" Clicked="OnSettingsClicked" />
             <Button Text="About" Clicked="OnAboutClicked" />

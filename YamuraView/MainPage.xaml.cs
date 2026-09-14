@@ -80,6 +80,15 @@ public partial class MainPage : ContentPage
     /// <summary>Unit the grid spacing is expressed in (feet or meters).</summary>
     private GridSpacingUnit trackMapGridUnit = GridSpacingUnit.Feet;
 
+    /// <summary>Show the active track map's start/finish/sector crossings as vertical lines on
+    /// the Strip Chart, with their color and thickness. User-set on the Settings page, persisted
+    /// in the config.</summary>
+    private bool stripChartShowTrackMapLines;
+    private Color stripChartTrackMapStartColor = Colors.LimeGreen;
+    private Color stripChartTrackMapSectorColor = Colors.Gold;
+    private Color stripChartTrackMapFinishColor = Colors.Red;
+    private float stripChartTrackMapLineWidth = 1f;
+
     // display-only smoothing per channel name (vibration noise etc.), shared by all three
     // charts by reference - mutated in place on settings save so the drawables' fingerprints
     // pick up the change; raw data is never modified
@@ -129,7 +138,12 @@ public partial class MainPage : ContentPage
             InvertedChannels = stripChartInvertedChannels,
             ChannelPenWidth = stripChartChannelPenWidth,
             DisplayMode = stripChartDisplayMode,
-            ChannelFilters = channelFilters
+            ChannelFilters = channelFilters,
+            ShowTrackMapLines = stripChartShowTrackMapLines,
+            TrackMapStartColor = stripChartTrackMapStartColor,
+            TrackMapSectorColor = stripChartTrackMapSectorColor,
+            TrackMapFinishColor = stripChartTrackMapFinishColor,
+            TrackMapLineWidth = stripChartTrackMapLineWidth
         };
         trackMapDrawable = new XYChartDrawable
         {
@@ -1408,6 +1422,32 @@ public partial class MainPage : ContentPage
             return;
         }
 
+        // a loaded track map is the alignment source: align new runs to its start line
+        // (precise crossing) rather than the nearest-point start position, and skip the
+        // manual time-axis wizard - the crossing sets time exactly
+        if (dataLogger.AlignmentTrackMap != null)
+        {
+            List<RunData> mapRuns = dataLogger.runData.Skip(alignedRunCount).ToList();
+            List<string> mapWarnings = new();
+            foreach (RunData run in mapRuns)
+            {
+                string? warning = TrackMapAlignment.AlignRun(run, dataLogger.AlignmentTrackMap);
+                if (warning != null)
+                {
+                    mapWarnings.Add(warning);
+                    AppLogger.Log($"Align to track map: {warning}");
+                }
+            }
+            alignedRunCount = dataLogger.runData.Count;
+            RecomputeDeltaTime();
+            RefreshCharts();
+            if (mapWarnings.Count > 0)
+            {
+                await DisplayAlertAsync("Track Map", string.Join("\n", mapWarnings), "OK");
+            }
+            return;
+        }
+
         if (dataLogger.RunStartPosition == null)
         {
             if (offerWizard)
@@ -1727,11 +1767,16 @@ public partial class MainPage : ContentPage
             tractionCircleCursorTrailPoints,
             trackMapGridSpacing,
             trackMapGridUnit,
+            stripChartShowTrackMapLines,
+            stripChartTrackMapStartColor,
+            stripChartTrackMapSectorColor,
+            stripChartTrackMapFinishColor,
+            stripChartTrackMapLineWidth,
             dataLogger.runData.Select(r => r.runName).ToList(),
             dataLogger.runData.SelectMany(r => r.channels.Keys).Distinct()
                 .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList(),
             channelFilters,
-            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay, tractionCircleTrailPoints, gridSpacing, gridUnit, updatedFilters) =>
+            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay, tractionCircleTrailPoints, gridSpacing, gridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapLineWidth, updatedFilters) =>
             {
                 bool autoloadFolderChanged = autoloadFolder != settings.AutoloadFolderPath;
                 settings.ConfigFilePath = path;
@@ -1745,6 +1790,16 @@ public partial class MainPage : ContentPage
                 trackMapGridUnit = gridUnit;
                 trackMapDrawable.GridSpacing = trackMapGridSpacing;
                 trackMapDrawable.GridSpacingUnit = trackMapGridUnit;
+                stripChartShowTrackMapLines = showTrackMapLines;
+                stripChartTrackMapStartColor = trackMapStartColor;
+                stripChartTrackMapSectorColor = trackMapSectorColor;
+                stripChartTrackMapFinishColor = trackMapFinishColor;
+                stripChartTrackMapLineWidth = trackMapLineWidth;
+                stripChartDrawable.ShowTrackMapLines = stripChartShowTrackMapLines;
+                stripChartDrawable.TrackMapStartColor = stripChartTrackMapStartColor;
+                stripChartDrawable.TrackMapSectorColor = stripChartTrackMapSectorColor;
+                stripChartDrawable.TrackMapFinishColor = stripChartTrackMapFinishColor;
+                stripChartDrawable.TrackMapLineWidth = stripChartTrackMapLineWidth;
                 // mutate the shared map in place - the drawables hold this same instance,
                 // and their data fingerprints fold in its contents, so this triggers a
                 // display-cache rebuild on the next repaint
@@ -1774,6 +1829,143 @@ public partial class MainPage : ContentPage
             "About YamuraView",
             $"YamuraView\nVersion {AppVersion.Number} ({AppVersion.Status})",
             "OK");
+    }
+
+    /// <summary>Opens the track-walk capture page (records GPS into a .ytm track map). Only
+    /// useful on a device with a GPS receiver; the saved map is imported for analysis anywhere.</summary>
+    private async void OnTrackWalkClicked(object? sender, EventArgs e)
+    {
+        await Navigation.PushModalAsync(new TrackWalkPage());
+    }
+
+    /// <summary>
+    /// Builds a track map from a loaded run's recorded GPS and opens the editor (recording
+    /// disabled) so the user can place start/finish/sector lines and notes on that trail and
+    /// save a .ytm - authoring a map from an existing log rather than a live track walk.
+    /// </summary>
+    private async void OnTrackMapFromRunClicked(object? sender, EventArgs e)
+    {
+        List<RunData> gpsRuns = dataLogger.runData.Where(TrackMapBuilder.HasGps).ToList();
+        if (gpsRuns.Count == 0)
+        {
+            await DisplayAlertAsync("Track Map from Run",
+                "Load a log file with GPS data first.", "OK");
+            return;
+        }
+
+        RunData run;
+        if (gpsRuns.Count == 1)
+        {
+            run = gpsRuns[0];
+        }
+        else
+        {
+            string[] runNames = gpsRuns.Select(r => r.runName).ToArray();
+            string choice = await DisplayActionSheetAsync("Track Map from Run - pick a run", "Cancel", null, runNames);
+            RunData? chosen = gpsRuns.FirstOrDefault(r => r.runName == choice);
+            if (chosen == null)
+            {
+                return; // cancelled
+            }
+            run = chosen;
+        }
+
+        TrackMap seed = TrackMapBuilder.FromRun(run);
+        await Navigation.PushModalAsync(new TrackWalkPage(seed, allowRecording: false));
+    }
+
+    /// <summary>
+    /// Imports a .ytm track map, makes it the active alignment source, and aligns every loaded
+    /// run to its start line (precise crossing) - superseding the nearest-point start position.
+    /// The map's lines/notes overlay the Track Map chart, and a base-run Delta-T recomputes on
+    /// the new offsets. Works on any device: it reads the map against runs' existing GPS data.
+    /// </summary>
+    private async void OnLoadTrackMapClicked(object? sender, EventArgs e)
+    {
+        string? path;
+        try
+        {
+            path = await TrackMapFilePicker.PickOpenAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"OnLoadTrackMapClicked: picker failed: {ex.Message}");
+            await DisplayAlertAsync("Load Track Map", ex.Message, "OK");
+            return;
+        }
+        if (path == null)
+        {
+            return;
+        }
+
+        TrackMap map;
+        try
+        {
+            map = TrackMapFile.Read(path);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"OnLoadTrackMapClicked: read failed: {ex.Message}");
+            await DisplayAlertAsync("Load Track Map", $"Couldn't read the track map: {ex.Message}", "OK");
+            return;
+        }
+
+        trackMapDrawable.OverlayMap = map;
+        AppLogger.Log($"Loaded track map '{map.Name}' from {path} ({map.Lines.Count} lines, {map.Notes.Count} notes)");
+
+        if (dataLogger.runData.Count == 0)
+        {
+            // no runs yet: the map still becomes the active source, so runs loaded next align to it
+            dataLogger.AlignmentTrackMap = map;
+            RefreshCharts();
+            await DisplayAlertAsync("Load Track Map",
+                $"Loaded '{map.Name}'. Runs you open now will align to its start line.", "OK");
+            return;
+        }
+
+        string? warning = TrackMapAlignment.ApplyToAllRuns(dataLogger, map);
+        alignedRunCount = dataLogger.runData.Count;
+        RecomputeDeltaTime();
+        RefreshCharts();
+        await DisplayAlertAsync("Load Track Map",
+            warning ?? $"Aligned {dataLogger.runData.Count} run(s) to '{map.Name}'.", "OK");
+    }
+
+    /// <summary>Shows the lap/sector timing of every loaded run against the active track map.</summary>
+    private async void OnTrackTimingClicked(object? sender, EventArgs e)
+    {
+        TrackMap? map = dataLogger.AlignmentTrackMap;
+        if (map == null)
+        {
+            await DisplayAlertAsync("Lap/Sector Times", "Load a track map first (Load Track Map).", "OK");
+            return;
+        }
+        if (dataLogger.runData.Count == 0)
+        {
+            await DisplayAlertAsync("Lap/Sector Times", "Load a log file first.", "OK");
+            return;
+        }
+        await Navigation.PushModalAsync(new TrackTimingPage(dataLogger, map));
+    }
+
+    /// <summary>Parses a hex color attribute, returning <paramref name="fallback"/> when it's
+    /// absent or malformed.</summary>
+    private static Color ParseColorAttr(XElement element, string attributeName, Color fallback)
+    {
+        string? hex = (string?)element.Attribute(attributeName);
+        if (string.IsNullOrWhiteSpace(hex))
+        {
+            return fallback;
+        }
+        try
+        {
+            return Color.FromArgb(hex);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"Bad {attributeName} '{hex}': {ex.Message}");
+            return fallback;
+        }
     }
 
     /// <summary>
@@ -1824,6 +2016,17 @@ public partial class MainPage : ContentPage
                 if (Enum.TryParse((string?)stripChart.Attribute("DisplayMode"), out ChartDisplayMode stripDisplayMode))
                 {
                     stripChartDisplayMode = stripDisplayMode;
+                }
+                if (bool.TryParse((string?)stripChart.Attribute("TrackMapLines"), out bool showTrackMapLines))
+                {
+                    stripChartShowTrackMapLines = showTrackMapLines;
+                }
+                stripChartTrackMapStartColor = ParseColorAttr(stripChart, "TrackMapStartColor", stripChartTrackMapStartColor);
+                stripChartTrackMapSectorColor = ParseColorAttr(stripChart, "TrackMapSectorColor", stripChartTrackMapSectorColor);
+                stripChartTrackMapFinishColor = ParseColorAttr(stripChart, "TrackMapFinishColor", stripChartTrackMapFinishColor);
+                if (float.TryParse((string?)stripChart.Attribute("TrackMapLineWidth"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float trackMapLineWidth) && trackMapLineWidth > 0)
+                {
+                    stripChartTrackMapLineWidth = trackMapLineWidth;
                 }
                 List<string> channelNames = stripChart.Elements("Channel")
                     .Select(el => (string?)el.Attribute("Name"))
@@ -1944,6 +2147,11 @@ public partial class MainPage : ContentPage
                     new XElement("StripChart",
                         new XAttribute("XAxis", stripChartXAxis),
                         new XAttribute("DisplayMode", stripChartDisplayMode.ToString()),
+                        new XAttribute("TrackMapLines", stripChartShowTrackMapLines),
+                        new XAttribute("TrackMapStartColor", stripChartTrackMapStartColor.ToHex()),
+                        new XAttribute("TrackMapSectorColor", stripChartTrackMapSectorColor.ToHex()),
+                        new XAttribute("TrackMapFinishColor", stripChartTrackMapFinishColor.ToHex()),
+                        new XAttribute("TrackMapLineWidth", stripChartTrackMapLineWidth),
                         channelNames.Select(n => new XElement("Channel",
                             new XAttribute("Name", n),
                             new XAttribute("Graph", stripChartChannelGraphIndex.TryGetValue(n, out int g) ? g : 0),

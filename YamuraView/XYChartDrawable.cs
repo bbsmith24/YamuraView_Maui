@@ -54,6 +54,11 @@ public class XYChartDrawable : IDrawable
     /// <summary>Unit <see cref="GridSpacing"/> is expressed in.</summary>
     public GridSpacingUnit GridSpacingUnit { get; set; } = GridSpacingUnit.Feet;
 
+    /// <summary>An imported track map to overlay - the start/finish/sector lines (with a travel
+    /// arrow and label) and note pins - drawn on top of the run traces. Only drawn when this
+    /// chart's axes are Longitude (X) / Latitude (Y), i.e. the Track Map; null draws nothing.</summary>
+    public TrackMap? OverlayMap { get; set; }
+
     private const float FeetToMeters = 0.3048f;
     private const float MetersPerDegreeLatitude = 111320f;
 
@@ -625,6 +630,48 @@ public class XYChartDrawable : IDrawable
                     }
                 }
             }
+        }
+
+        if (OverlayMap != null &&
+            XChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase) &&
+            YChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase))
+        {
+            // lines/notes are placed in geographic space; scaleX/scaleY map lon/lat exactly the
+            // same way as the plotted GPS traces, so the overlay lines up with the drawn track
+            canvas.SaveState();
+            canvas.ClipRectangle(plotLeft, plotTop, plotWidth, plotHeight);
+            TrackMapUnits units = OverlayMap.Units;
+            foreach (TrackLine line in OverlayMap.Lines)
+            {
+                ((double Lat, double Lon) a, (double Lat, double Lon) b) = TrackMapGeometry.GetLineEndpoints(line, units);
+                float ax = scaleX((float)a.Lon), ay = scaleY((float)a.Lat);
+                float bx = scaleX((float)b.Lon), by = scaleY((float)b.Lat);
+                Color lineColor = line.Type switch
+                {
+                    LineType.Start => Colors.LimeGreen,
+                    LineType.Finish => Colors.Red,
+                    _ => Colors.Gold,
+                };
+                canvas.StrokeColor = lineColor;
+                canvas.StrokeSize = 3;
+                canvas.DrawLine(ax, ay, bx, by);
+
+                float cx = scaleX((float)line.Longitude), cy = scaleY((float)line.Latitude);
+                double theta = line.Heading * Math.PI / 180.0;
+                canvas.DrawLine(cx, cy, cx + (float)Math.Sin(theta) * 18f, cy - (float)Math.Cos(theta) * 18f);
+
+                string label = line.Type == LineType.Sector ? $"S{line.Order}" : line.Type.ToString();
+                canvas.FontColor = lineColor;
+                canvas.FontSize = 11;
+                canvas.DrawString(label, cx + 5, cy - 12, HorizontalAlignment.Left);
+            }
+            foreach (TrackNote note in OverlayMap.Notes)
+            {
+                float nx = scaleX((float)note.Longitude), ny = scaleY((float)note.Latitude);
+                canvas.FillColor = Colors.Orange;
+                canvas.FillCircle(nx, ny, 4);
+            }
+            canvas.RestoreState();
         }
 
         if (CursorTimes != null)

@@ -71,6 +71,21 @@
                 <Entry Grid.Row="4" Grid.Column="1" x:Name="TractionCircleTrailPointsEntry" WidthRequest="140" Keyboard="Numeric" />
             </Grid>
 
+            <Label Text="Track Map Lines on Strip Chart" FontAttributes="Bold" />
+            <Label Text="Show the loaded track map's start/finish/sector crossings as vertical lines on the Strip Chart." FontSize="12" />
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Show Lines" VerticalOptions="Center" />
+                <Switch Grid.Row="0" Grid.Column="1" x:Name="TrackMapLinesSwitch" HorizontalOptions="Start" />
+                <Label Grid.Row="1" Grid.Column="0" Text="Start Color" VerticalOptions="Center" />
+                <Button Grid.Row="1" Grid.Column="1" x:Name="TrackMapStartColorSwatch" WidthRequest="80" HeightRequest="34" BorderColor="Gray" BorderWidth="1" Clicked="OnTrackMapStartColorClicked" />
+                <Label Grid.Row="2" Grid.Column="0" Text="Sector Color" VerticalOptions="Center" />
+                <Button Grid.Row="2" Grid.Column="1" x:Name="TrackMapSectorColorSwatch" WidthRequest="80" HeightRequest="34" BorderColor="Gray" BorderWidth="1" Clicked="OnTrackMapSectorColorClicked" />
+                <Label Grid.Row="3" Grid.Column="0" Text="Finish Color" VerticalOptions="Center" />
+                <Button Grid.Row="3" Grid.Column="1" x:Name="TrackMapFinishColorSwatch" WidthRequest="80" HeightRequest="34" BorderColor="Gray" BorderWidth="1" Clicked="OnTrackMapFinishColorClicked" />
+                <Label Grid.Row="4" Grid.Column="0" Text="Line Thickness" VerticalOptions="Center" />
+                <Entry Grid.Row="4" Grid.Column="1" x:Name="TrackMapLineWidthEntry" WidthRequest="140" Keyboard="Numeric" />
+            </Grid>
+
             <Label Text="Channel Filters" FontAttributes="Bold" />
             <Label Text="Display-only smoothing per channel (e.g. vibration noise on G channels) - the logged data is unchanged. Window is in samples, centered on each point." FontSize="12" />
             <VerticalStackLayout x:Name="ChannelFilterLayout" Spacing="4" />

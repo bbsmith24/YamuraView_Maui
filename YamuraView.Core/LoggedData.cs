@@ -28,9 +28,19 @@ namespace YamuraView.Core
         /// <summary>
         /// The user-defined start position, marked once on the first loaded run in the
         /// alignment wizard; null until defined. Runs loaded afterward are aligned
-        /// automatically to it (see <see cref="RunAlignment"/>).
+        /// automatically to it (see <see cref="RunAlignment"/>). When a track map is the active
+        /// alignment source (<see cref="AlignmentTrackMap"/>), this is kept in sync with the
+        /// map's start line so code that reads the start marker stays coherent.
         /// </summary>
         public StartPosition? RunStartPosition { get; set; }
+
+        /// <summary>
+        /// The imported track map currently driving alignment/timing, or null when runs are
+        /// aligned by the nearest-point start position instead. Set when a map is applied
+        /// (see <see cref="TrackMapAlignment"/>); runs loaded afterward align to its start line
+        /// rather than to <see cref="RunStartPosition"/>.
+        /// </summary>
+        public TrackMap? AlignmentTrackMap { get; set; }
 
         public void UpdateChannelRange(string channelName, float curVal)
         {
@@ -43,6 +53,7 @@ namespace YamuraView.Core
             channelRanges.Clear();
             DistanceAlignPoint = float.NaN;
             RunStartPosition = null;
+            AlignmentTrackMap = null;
             minMaxTimestamp = new float[] { float.MaxValue, float.MinValue };
             minMaxLong = new float[] { float.MaxValue, float.MinValue };
             minMaxLat = new float[] { float.MaxValue, float.MinValue };
