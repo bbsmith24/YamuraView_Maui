@@ -25,6 +25,12 @@ Apple's toolchain (Xcode) only runs on macOS. There are two workflows:
 
 ## 1. One-time Mac setup
 
+> **Where to keep the repo.** Clone it **outside** `~/Documents` and
+> `~/Desktop` — this repo lives at `~/dev/YamuraView_Maui`. With iCloud
+> *Desktop & Documents Folders* sync on, `codesign` fails on any `.app` under
+> those folders, which breaks every signed Release build. See the `codesign`
+> "detritus not allowed" entry in section 5 for the full explanation.
+
 1. **Xcode** — install from the App Store, launch it once to accept the
    license, then install the command-line tools and platforms:
 
@@ -50,6 +56,31 @@ Apple's toolchain (Xcode) only runs on macOS. There are two workflows:
 
    (Installs the iOS, Mac Catalyst, and Android workloads. After a .NET SDK
    update, re-run `sudo dotnet workload update`.)
+
+   > **User-local install (no `sudo`).** The `sudo` above is only needed when
+   > the SDK lives in a system location (`/usr/local/share/dotnet`, e.g. the
+   > `.pkg` installer). If you instead install the SDK into your home directory
+   > with the official script — which requires no admin rights at all:
+   >
+   > ```bash
+   > curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir "$HOME/.dotnet"
+   > ```
+   >
+   > then add it to your shell (in `~/.zshrc`):
+   >
+   > ```bash
+   > export DOTNET_ROOT="$HOME/.dotnet"
+   > export PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"
+   > ```
+   >
+   > and run **every** workload command *without* `sudo`, since the packs are
+   > written under `~/.dotnet` rather than a system path:
+   >
+   > ```bash
+   > dotnet workload install maui   # no sudo
+   > dotnet workload update         # no sudo
+   > dotnet workload repair         # no sudo
+   > ```
 
 4. **Apple developer account** — needed to run on a physical iPhone/iPad and
    for any distribution. Free accounts can deploy to their own devices;
@@ -294,7 +325,9 @@ xcrun stapler staple YamuraView.app
   `codesign` refuses to sign a bundle carrying it. `xattr -cr` does **not**
   fix it — the daemon re-adds the attribute within seconds, so the next
   build fails identically. Keep the repo outside `~/Documents` and
-  `~/Desktop`; this one lives in `~/dev/YamuraView_Maui` for that reason.
+  `~/Desktop`; this one was moved out of `~/Documents` to
+  `~/dev/YamuraView_Maui` for that reason (see *Where to keep the repo* in
+  section 1).
 - **"Open" does nothing on Mac Catalyst** — the app is missing the
   `com.apple.security.files.user-selected.read-write` entitlement. Without it
   `UIDocumentPickerViewController` presents, but its view stays hidden, no
