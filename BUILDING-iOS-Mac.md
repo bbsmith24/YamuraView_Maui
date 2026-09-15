@@ -334,20 +334,62 @@ Transporter.
 
 ### Mac Catalyst — direct distribution outside the App Store
 
-Sign with a **Developer ID** certificate instead, then notarize:
+Sign with a **Developer ID** certificate instead, then notarize. This needs
+two certs, both of which come with a Developer ID setup: **Developer ID
+Application** (signs the `.app`) and **Developer ID Installer** (signs the
+`.pkg`). Confirm both are present with `security find-identity -v` — the
+installer cert does *not* show under `-p codesigning`.
 
 ```bash
 dotnet publish YamuraView/YamuraView.csproj -f net10.0-maccatalyst -c Release \
+    -p:RuntimeIdentifier=maccatalyst-arm64 \
     -p:CreatePackage=true \
     -p:EnableCodeSigning=true \
-    -p:CodesignKey="Developer ID Application: Yamura Electronics (TEAMID)" \
-    -p:CodesignProvision="<Developer ID profile name>" \
-    -p:CodesignEntitlements="Platforms/MacCatalyst/Entitlements.plist" \
+    -p:EnablePackageSigning=true \
+    -p:CodesignKey="Developer ID Application: Brian Smith (W52E539DAG)" \
+    -p:PackageSigningKey="Developer ID Installer: Brian Smith (W52E539DAG)" \
+    -p:CodesignEntitlements="Platforms/MacCatalyst/Entitlements.Unsandboxed.plist" \
     -p:UseHardenedRuntime=true
+```
 
-xcrun notarytool submit <path-to-pkg-or-zip> --wait \
-    --apple-id <apple-id> --team-id <TEAMID> --password <app-specific-password>
-xcrun stapler staple YamuraView.app
+Notes on this command (each differs from the App Store one above, and each
+matters):
+
+- **No `CodesignProvision`.** Developer ID apps distributed outside the App
+  Store do not use a provisioning profile — none is needed or installed.
+- **`EnablePackageSigning` + `PackageSigningKey`** are required, or
+  `CreatePackage` emits an *unsigned* `.pkg` that Gatekeeper rejects. The App
+  Store path signs the installer too; direct distribution must not skip it.
+- **`Entitlements.Unsandboxed.plist`, not `Entitlements.plist`.** Direct
+  distribution does **not** require App Sandbox, and turning it on restricts
+  the app to user-selected paths — which breaks the config file and autoload
+  folder (see *Entitlements and the file picker* below). Hardened Runtime
+  (`UseHardenedRuntime=true`) is the part notarization actually requires, and
+  is kept.
+- **`RuntimeIdentifier=maccatalyst-arm64`** builds an Apple-Silicon-only
+  package. For a universal build set
+  `<RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers>`
+  in the `.csproj` — passing the two RIDs on the command line does **not**
+  work (the `;` is mis-parsed, and it leaks into referenced projects as one
+  invalid RID).
+
+The signed `.pkg` lands at
+`YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/publish/YamuraView-<version>.pkg`.
+Verify before notarizing:
+
+```bash
+PKG=YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/publish/YamuraView-<version>.pkg
+codesign --verify --strict YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/YamuraView.app
+pkgutil --check-signature "$PKG"     # expect "Developer ID Installer: Brian Smith (W52E539DAG)"
+```
+
+Then notarize and staple the **`.pkg`** (create an app-specific password at
+appleid.apple.com → Sign-In & Security):
+
+```bash
+xcrun notarytool submit "$PKG" --wait \
+    --apple-id <apple-id> --team-id W52E539DAG --password <app-specific-password>
+xcrun stapler staple "$PKG"          # staple the pkg you distribute, not the .app
 ```
 
 ---
@@ -409,12 +451,14 @@ entitlement is. Two files cover the two cases:
   arbitrary-path access.
 - [Entitlements.plist](YamuraView/Platforms/MacCatalyst/Entitlements.plist) —
   App Sandbox on (required by the Mac App Store) plus the network and
-  user-selected-files entitlements. The App Store `.pkg` and Developer ID
-  commands above pass this explicitly with
-  `-p:CodesignEntitlements=...`; a global property set on the command line
-  overrides the `.csproj` default, so those builds still get the sandbox.
+  user-selected-files entitlements. **Only the App Store `.pkg` uses this**,
+  passed explicitly with `-p:CodesignEntitlements=...`; a global property set
+  on the command line overrides the `.csproj` default, so that build gets the
+  sandbox. The Developer ID (direct-distribution) command deliberately uses
+  the *unsandboxed* file instead — the sandbox isn't required off the App
+  Store and would break file access, so only Hardened Runtime is added there.
 
-Because only the App Store / Developer ID builds are sandboxed, the config
-file path and autoload folder need re-checking before an App Store submission
-— a sandboxed app can only reach paths the user picked, and both of those are
-arbitrary paths remembered across runs.
+Because **only the App Store build is sandboxed**, the config file path and
+autoload folder need re-checking before an App Store submission — a sandboxed
+app can only reach paths the user picked, and both of those are arbitrary
+paths remembered across runs.
