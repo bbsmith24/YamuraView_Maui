@@ -1831,6 +1831,33 @@ public partial class MainPage : ContentPage
             "OK");
     }
 
+    /// <summary>
+    /// Combined "Track Map" menu button. The iPad menu bar is too narrow to fit Track Walk,
+    /// Track Map from Run, and Load Track Map as separate buttons, so they live under one
+    /// button and are presented as an action sheet that dispatches to the existing handlers.
+    /// </summary>
+    private async void OnTrackMapMenuClicked(object? sender, EventArgs e)
+    {
+        const string trackWalk = "Track Walk";
+        const string mapFromRun = "Track Map from Run";
+        const string loadMap = "Load Track Map";
+
+        string choice = await DisplayActionSheetAsync("Track Map", "Cancel", null, trackWalk, mapFromRun, loadMap);
+
+        switch (choice)
+        {
+            case trackWalk:
+                OnTrackWalkClicked(sender, e);
+                break;
+            case mapFromRun:
+                OnTrackMapFromRunClicked(sender, e);
+                break;
+            case loadMap:
+                OnLoadTrackMapClicked(sender, e);
+                break;
+        }
+    }
+
     /// <summary>Opens the track-walk capture page (records GPS into a .ytm track map). Only
     /// useful on a device with a GPS receiver; the saved map is imported for analysis anywhere.</summary>
     private async void OnTrackWalkClicked(object? sender, EventArgs e)
