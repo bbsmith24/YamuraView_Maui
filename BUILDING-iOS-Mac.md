@@ -128,22 +128,70 @@ signing once, then reference the identity/profile from the CLI:
 
 1. In Xcode create (or open) any project with the bundle ID
    `com.yamuraelectronics.yamuraview` (the `ApplicationId` from the csproj),
-   enable *Automatically manage signing*, and deploy once to the device.
-   This registers the device and creates a development provisioning profile.
-2. Build and deploy from the CLI:
+   enable *Automatically manage signing*, pick your team, and deploy once to
+   the device. This is a throwaway project — its only job is to mint the
+   **Apple Development** certificate, register the device's UDID, and generate
+   a **development provisioning profile**. Delete it afterwards; the cert and
+   profile stay in the keychain / `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`.
+
+2. **Find the values the CLI needs.** The signing identity name:
 
    ```bash
-   dotnet build YamuraView/YamuraView.csproj -f net10.0-ios -t:Run \
-       -p:RuntimeIdentifier=ios-arm64 \
-       -p:CodesignKey="Apple Development: Your Name (TEAMID)" \
-       -p:CodesignProvision="<profile name>"
+   security find-identity -v -p codesigning        # e.g. "Apple Development: Brian Smith (YESM22X7CU)"
    ```
 
-   List installed signing identities with
-   `security find-identity -v -p codesigning`.
+   The provisioning profile's internal *Name* (not its filename — modern Xcode
+   stores profiles under `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`):
+
+   ```bash
+   for p in ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision; do
+     security cms -D -i "$p" 2>/dev/null | plutil -extract Name raw - -o -; echo
+   done
+   # e.g. "iOS Team Provisioning Profile: com.yamuraelectronics.yamuraview"
+   ```
+
+   The device's UDID (the 25-char hardware id, *not* the CoreDevice UUID):
+
+   ```bash
+   xcrun xctrace list devices        # e.g. Brian's iPad Pro ... (00008112-0009042121FB401E)
+   ```
+
+3. **Build and sign the device `.app`** (this step only — no `-t:Run`, see
+   note below):
+
+   ```bash
+   dotnet build YamuraView/YamuraView.csproj -f net10.0-ios -c Debug \
+       -p:RuntimeIdentifier=ios-arm64 \
+       -p:CodesignKey="Apple Development: Brian Smith (YESM22X7CU)" \
+       -p:CodesignProvision="iOS Team Provisioning Profile: com.yamuraelectronics.yamuraview"
+   ```
+
+   The signed bundle lands at
+   `YamuraView/bin/Debug/net10.0-ios/ios-arm64/YamuraView.app`.
+
+4. **Install and launch with `devicectl`** (Apple's modern CoreDevice tool):
+
+   ```bash
+   UDID=00008112-0009042121FB401E
+   APP=YamuraView/bin/Debug/net10.0-ios/ios-arm64/YamuraView.app
+   xcrun devicectl device install app --device "$UDID" "$APP"
+   xcrun devicectl device process launch --device "$UDID" com.yamuraelectronics.yamuraview
+   ```
 
 The device must be in Developer Mode (Settings → Privacy & Security →
-Developer Mode) and trusted from the Mac.
+Developer Mode) and trusted from the Mac. On the first launch of a build
+signed with a new cert, approve it on the device under
+*Settings → General → VPN & Device Management → Developer App → Trust*.
+
+> **Why not `dotnet ... -t:Run`?** The documented `-t:Run` target drives the
+> install through the bundled **`mlaunch`** tool, whose `--installdev` path
+> **hangs indefinitely** on iOS 26 / recent devices — it sits at the copy step
+> with no output and never completes, and nothing installs. Building the
+> signed `.app` first and installing it with `devicectl` (steps 3–4) is the
+> reliable replacement. A single `-t:Run` also fails the *first* time with
+> *"The app must be built before the arguments to launch the app using mlaunch
+> can be computed"* because it tries to launch before building — another
+> reason to keep build and install as separate steps.
 
 ### VS Code one-click tasks
 
