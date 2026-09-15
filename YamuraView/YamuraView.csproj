@@ -78,6 +78,11 @@
 	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
 		<EnableCodeSigning>true</EnableCodeSigning>
 		<CodesignEntitlements>Platforms\MacCatalyst\Entitlements.Unsandboxed.plist</CodesignEntitlements>
+		<!-- Release publishes a universal (Intel + Apple Silicon) .app/.pkg; Debug stays
+		     single-arch so local runs build fast. RuntimeIdentifiers (plural) must live here
+		     in the csproj - passing it as a global -p: property leaks the mac RID into the
+		     referenced YamuraView.Core library and fails with NETSDK1083. -->
+		<RuntimeIdentifiers Condition="'$(Configuration)' == 'Release'">maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers>
 	</PropertyGroup>
 
 	<ItemGroup>

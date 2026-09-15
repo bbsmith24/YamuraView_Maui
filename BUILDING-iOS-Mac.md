@@ -342,7 +342,6 @@ installer cert does *not* show under `-p codesigning`.
 
 ```bash
 dotnet publish YamuraView/YamuraView.csproj -f net10.0-maccatalyst -c Release \
-    -p:RuntimeIdentifier=maccatalyst-arm64 \
     -p:CreatePackage=true \
     -p:EnableCodeSigning=true \
     -p:EnablePackageSigning=true \
@@ -366,20 +365,26 @@ matters):
   folder (see *Entitlements and the file picker* below). Hardened Runtime
   (`UseHardenedRuntime=true`) is the part notarization actually requires, and
   is kept.
-- **`RuntimeIdentifier=maccatalyst-arm64`** builds an Apple-Silicon-only
-  package. For a universal build set
-  `<RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers>`
-  in the `.csproj` — passing the two RIDs on the command line does **not**
-  work (the `;` is mis-parsed, and it leaks into referenced projects as one
-  invalid RID).
+- **No RID on the command line → a universal (Intel + Apple Silicon) build.**
+  The `.csproj` sets `<RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers>`
+  for Release only (Debug stays single-arch for fast local runs), so the
+  command above produces a universal `.app`/`.pkg`. To build an
+  Apple-Silicon-only package instead, add `-p:RuntimeIdentifier=maccatalyst-arm64`
+  (singular) — that overrides the default. Do **not** try to pass the two RIDs
+  as a command-line property; the `;` is mis-parsed and leaks into the
+  referenced `YamuraView.Core` library as one invalid RID (`NETSDK1083`), which
+  is why the list lives in the `.csproj`.
 
 The signed `.pkg` lands at
-`YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/publish/YamuraView-<version>.pkg`.
-Verify before notarizing:
+`YamuraView/bin/Release/net10.0-maccatalyst/publish/YamuraView-<version>.pkg`
+for the universal build (an arm64-only build lands under the
+`maccatalyst-arm64/publish/` subfolder instead). Verify before notarizing —
+the universal app binary should report both arches:
 
 ```bash
-PKG=YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/publish/YamuraView-<version>.pkg
-codesign --verify --strict YamuraView/bin/Release/net10.0-maccatalyst/maccatalyst-arm64/YamuraView.app
+PKG=YamuraView/bin/Release/net10.0-maccatalyst/publish/YamuraView-<version>.pkg
+codesign --verify --strict YamuraView/bin/Release/net10.0-maccatalyst/YamuraView.app
+lipo -info YamuraView/bin/Release/net10.0-maccatalyst/YamuraView.app/Contents/MacOS/YamuraView  # expect: x86_64 arm64
 pkgutil --check-signature "$PKG"     # expect "Developer ID Installer: Brian Smith (W52E539DAG)"
 ```
 
