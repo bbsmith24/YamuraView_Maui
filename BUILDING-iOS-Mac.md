@@ -392,6 +392,37 @@ xcrun notarytool submit "$PKG" --wait \
 xcrun stapler staple "$PKG"          # staple the pkg you distribute, not the .app
 ```
 
+`--wait` blocks until Apple returns `status: Accepted` (usually a few
+minutes); `stapler staple` then attaches the ticket so the installer passes
+Gatekeeper even offline. Confirm the final artifact with:
+
+```bash
+xcrun stapler validate "$PKG"
+spctl -a -vvv -t install "$PKG"      # expect: accepted / source=Notarized Developer ID
+```
+
+> **Store the credentials once (recommended).** Instead of passing
+> `--apple-id/--team-id/--password` on every submit, save them to a named
+> keychain profile — it prompts for the app-specific password with hidden
+> input and never puts it on the command line:
+>
+> ```bash
+> xcrun notarytool store-credentials "YamuraView-Notary" \
+>     --apple-id <apple-id> --team-id W52E539DAG
+> ```
+>
+> Then every future notarization is just:
+>
+> ```bash
+> xcrun notarytool submit "$PKG" --keychain-profile "YamuraView-Notary" --wait
+> ```
+>
+> The app-specific password (appleid.apple.com → Sign-In & Security →
+> App-Specific Passwords) can't be viewed again after creation — if lost,
+> revoke it there and generate a new one, then re-run `store-credentials` to
+> overwrite the profile. Verify a stored profile with
+> `xcrun notarytool history --keychain-profile "YamuraView-Notary"`.
+
 ---
 
 ## 5. Troubleshooting
