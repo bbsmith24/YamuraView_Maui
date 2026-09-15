@@ -73,6 +73,34 @@ namespace YamuraView.Core
     }
 
     /// <summary>
+    /// Shape a <see cref="TrackMark"/> is drawn with. Square suits a standing cone (or any
+    /// non-directional marker); Triangle suits a lay-down pointer cone, whose
+    /// <see cref="TrackMark.Orientation"/> is the direction it points.
+    /// </summary>
+    public enum MarkShape
+    {
+        Square,
+        Triangle,
+    }
+
+    /// <summary>
+    /// A point of interest pinned to a GPS position and drawn on the track map - e.g. an autocross
+    /// cone or a circuit apex/braking marker. Like <see cref="TrackNote"/>, marks are advisory only
+    /// (no part in crossing detection or timing); unlike notes they carry no text and render as a
+    /// filled shape in the map's mark color.
+    /// </summary>
+    public sealed class TrackMark
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+        /// <summary>Square (standing cone) or triangle (lay-down pointer cone).</summary>
+        public MarkShape Shape { get; set; } = MarkShape.Square;
+        /// <summary>Orientation in degrees (0 = pointing up/north, increasing clockwise). For a
+        /// triangle this is the direction the pointer aims; for a square it simply rotates it.</summary>
+        public float Orientation { get; set; }
+    }
+
+    /// <summary>
     /// Distance unit a track map's line widths are expressed in.
     /// </summary>
     public enum TrackMapUnits
@@ -113,6 +141,9 @@ namespace YamuraView.Core
         public List<TrackLine> Lines { get; set; } = new();
 
         public List<TrackNote> Notes { get; set; } = new();
+
+        /// <summary>Point-of-interest markers (cones, apexes, braking points) drawn as squares.</summary>
+        public List<TrackMark> Marks { get; set; } = new();
 
         /// <summary>The single Start line, or null if none has been placed yet.</summary>
         public TrackLine? StartLine => Lines.FirstOrDefault(l => l.Type == LineType.Start);

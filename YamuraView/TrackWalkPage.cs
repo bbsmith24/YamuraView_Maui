@@ -30,6 +30,14 @@ public sealed class TrackWalkPage : ContentPage
     private Tool tool = Tool.Select;
     private TrackLine? selectedLine;
     private TrackNote? selectedNote;
+    private TrackMark? selectedMark;
+
+    /// <summary>Fill color for placed marks; set by the caller from settings (default orange).</summary>
+    public Color MarkColor
+    {
+        get => drawable.MarkColor;
+        set => drawable.MarkColor = value;
+    }
 
     // drag state (Pan on the selected item)
     private bool dragging;
@@ -46,9 +54,12 @@ public sealed class TrackWalkPage : ContentPage
 
     private readonly Grid linePropsRow;
     private readonly Grid notePropsRow;
+    private readonly Grid markPropsRow;
     private readonly Entry headingEntry = new() { Keyboard = Keyboard.Numeric, WidthRequest = 80 };
     private readonly Entry widthEntry = new() { Keyboard = Keyboard.Numeric, WidthRequest = 80 };
     private readonly Entry noteTextEntry = new() { Placeholder = "Note text", HorizontalOptions = LayoutOptions.Fill };
+    private readonly Picker markShapePicker = new() { WidthRequest = 110 };
+    private readonly Entry markOrientEntry = new() { Keyboard = Keyboard.Numeric, WidthRequest = 80 };
 
     /// <summary>Live track walk: records GPS into a fresh map.</summary>
     public TrackWalkPage() : this(new TrackMap { Units = TrackMapUnits.Feet, SameStartFinish = false }, allowRecording: true)
@@ -130,6 +141,11 @@ public sealed class TrackWalkPage : ContentPage
         AddToolButton(toolRow, Tool.Sector, "+ Sector");
         AddToolButton(toolRow, Tool.Finish, "+ Finish");
         AddToolButton(toolRow, Tool.Note, "+ Note");
+        // "Mark Location" is an action, not a placement mode: it drops a mark at the current GPS
+        // fix (while recording) or the map center, so you can flag a cone/apex as you walk past it.
+        Button markButton = new() { Text = "Mark Location", Margin = new Thickness(0, 0, 6, 6) };
+        markButton.Clicked += OnMarkLocationClicked;
+        toolRow.Add(markButton);
 
         // gestures: Tap places (a placement tool) or selects (Select); Pan drags the selection
         TapGestureRecognizer tap = new();
@@ -141,8 +157,10 @@ public sealed class TrackWalkPage : ContentPage
 
         linePropsRow = BuildLinePropsRow();
         notePropsRow = BuildNotePropsRow();
+        markPropsRow = BuildMarkPropsRow();
         linePropsRow.IsVisible = false;
         notePropsRow.IsVisible = false;
+        markPropsRow.IsVisible = false;
 
         Button cancelButton = new() { Text = "Cancel" };
         cancelButton.Clicked += async (_, _) => { StopRecording(); await Navigation.PopModalAsync(); };
@@ -176,6 +194,7 @@ public sealed class TrackWalkPage : ContentPage
         layout.Add(selectionLabel, 0, 5);
         layout.Add(linePropsRow, 0, 6);
         layout.Add(notePropsRow, 0, 6); // same row; only one visible at a time
+        layout.Add(markPropsRow, 0, 6);
         layout.Add(buttonRow, 0, 7);
         Content = layout;
 
@@ -351,13 +370,14 @@ public sealed class TrackWalkPage : ContentPage
         double best = SelectPixelThreshold;
         TrackLine? bestLine = null;
         TrackNote? bestNote = null;
+        TrackMark? bestMark = null;
         foreach (TrackLine line in map.Lines)
         {
             PointF? px = drawable.GeoToPixel(line.Latitude, line.Longitude);
             if (px is { } pt)
             {
                 double d = Distance(pt, p);
-                if (d < best) { best = d; bestLine = line; bestNote = null; }
+                if (d < best) { best = d; bestLine = line; bestNote = null; bestMark = null; }
             }
         }
         foreach (TrackNote note in map.Notes)
@@ -366,12 +386,48 @@ public sealed class TrackWalkPage : ContentPage
             if (px is { } pt)
             {
                 double d = Distance(pt, p);
-                if (d < best) { best = d; bestNote = note; bestLine = null; }
+                if (d < best) { best = d; bestNote = note; bestLine = null; bestMark = null; }
+            }
+        }
+        foreach (TrackMark mark in map.Marks)
+        {
+            PointF? px = drawable.GeoToPixel(mark.Latitude, mark.Longitude);
+            if (px is { } pt)
+            {
+                double d = Distance(pt, p);
+                if (d < best) { best = d; bestMark = mark; bestLine = null; bestNote = null; }
             }
         }
         if (bestLine != null) { SelectLine(bestLine); }
         else if (bestNote != null) { SelectNote(bestNote); }
+        else if (bestMark != null) { SelectMark(bestMark); }
         else { ClearSelection(); }
+    }
+
+    /// <summary>Drops a mark at the current GPS fix (while recording) or, failing that, at the
+    /// center of the current view - so a cone/apex can be flagged in both live and from-run modes -
+    /// then selects it for dragging.</summary>
+    private void OnMarkLocationClicked(object? sender, EventArgs e)
+    {
+        (double Lat, double Lon)? geo = drawable.CurrentPosition is { } cur
+            ? (cur.Lat, cur.Lon)
+            : drawable.PixelToGeo(new Point(mapView.Width / 2, mapView.Height / 2));
+        if (!geo.HasValue)
+        {
+            return;
+        }
+        TrackMark mark = new()
+        {
+            Latitude = geo.Value.Lat,
+            Longitude = geo.Value.Lon,
+            // start pointing along the walk direction here, so a triangle (pointer cone) is aimed
+            // sensibly by default; harmless for a square
+            Orientation = DefaultHeadingAt(geo.Value.Lat, geo.Value.Lon),
+        };
+        map.Marks.Add(mark);
+        SwitchToSelect();
+        SelectMark(mark);
+        mapView.Invalidate();
     }
 
     private static double Distance(PointF a, Point b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
@@ -380,14 +436,17 @@ public sealed class TrackWalkPage : ContentPage
     {
         selectedLine = line;
         selectedNote = null;
+        selectedMark = null;
         drawable.SelectedLine = line;
         drawable.SelectedNote = null;
+        drawable.SelectedMark = null;
         updatingFields = true;
         headingEntry.Text = line.Heading.ToString("0.#");
         widthEntry.Text = line.Width.ToString("0.#");
         updatingFields = false;
         linePropsRow.IsVisible = true;
         notePropsRow.IsVisible = false;
+        markPropsRow.IsVisible = false;
         UpdateSelectionLabel();
         mapView.Invalidate();
     }
@@ -396,13 +455,35 @@ public sealed class TrackWalkPage : ContentPage
     {
         selectedNote = note;
         selectedLine = null;
+        selectedMark = null;
         drawable.SelectedNote = note;
         drawable.SelectedLine = null;
+        drawable.SelectedMark = null;
         updatingFields = true;
         noteTextEntry.Text = note.Text;
         updatingFields = false;
         notePropsRow.IsVisible = true;
         linePropsRow.IsVisible = false;
+        markPropsRow.IsVisible = false;
+        UpdateSelectionLabel();
+        mapView.Invalidate();
+    }
+
+    private void SelectMark(TrackMark mark)
+    {
+        selectedMark = mark;
+        selectedLine = null;
+        selectedNote = null;
+        drawable.SelectedMark = mark;
+        drawable.SelectedLine = null;
+        drawable.SelectedNote = null;
+        updatingFields = true;
+        markShapePicker.SelectedIndex = mark.Shape == MarkShape.Triangle ? 1 : 0;
+        markOrientEntry.Text = mark.Orientation.ToString("0.#");
+        updatingFields = false;
+        markPropsRow.IsVisible = true;
+        linePropsRow.IsVisible = false;
+        notePropsRow.IsVisible = false;
         UpdateSelectionLabel();
         mapView.Invalidate();
     }
@@ -411,10 +492,13 @@ public sealed class TrackWalkPage : ContentPage
     {
         selectedLine = null;
         selectedNote = null;
+        selectedMark = null;
         drawable.SelectedLine = null;
         drawable.SelectedNote = null;
+        drawable.SelectedMark = null;
         linePropsRow.IsVisible = false;
         notePropsRow.IsVisible = false;
+        markPropsRow.IsVisible = false;
         UpdateSelectionLabel();
         mapView.Invalidate();
     }
@@ -425,13 +509,15 @@ public sealed class TrackWalkPage : ContentPage
             ? $"Selected: {selectedLine.Type}{(selectedLine.Type == LineType.Sector ? " " + selectedLine.Order : "")} line"
             : selectedNote != null
                 ? "Selected: note"
-                : $"Tool: {tool}  •  {map.Walk.Count} trail points  •  drag a selected item to move it";
+                : selectedMark != null
+                    ? "Selected: mark"
+                    : $"Tool: {tool}  •  {map.Walk.Count} trail points  •  drag a selected item to move it";
     }
 
     private void OnPanUpdated(object? sender, PanUpdatedEventArgs e)
     {
         // only Select-tool drags move the selection; placement tools use tap
-        if (tool != Tool.Select || (selectedLine == null && selectedNote == null))
+        if (tool != Tool.Select || (selectedLine == null && selectedNote == null && selectedMark == null))
         {
             return;
         }
@@ -441,7 +527,9 @@ public sealed class TrackWalkPage : ContentPage
                 dragging = true;
                 PointF? anchor = selectedLine != null
                     ? drawable.GeoToPixel(selectedLine.Latitude, selectedLine.Longitude)
-                    : drawable.GeoToPixel(selectedNote!.Latitude, selectedNote.Longitude);
+                    : selectedNote != null
+                        ? drawable.GeoToPixel(selectedNote.Latitude, selectedNote.Longitude)
+                        : drawable.GeoToPixel(selectedMark!.Latitude, selectedMark.Longitude);
                 dragAnchorPixel = anchor ?? new PointF((float)(mapView.Width / 2), (float)(mapView.Height / 2));
                 break;
             case GestureStatus.Running:
@@ -455,6 +543,7 @@ public sealed class TrackWalkPage : ContentPage
                 {
                     if (selectedLine != null) { selectedLine.Latitude = geo.Value.Lat; selectedLine.Longitude = geo.Value.Lon; }
                     else if (selectedNote != null) { selectedNote.Latitude = geo.Value.Lat; selectedNote.Longitude = geo.Value.Lon; }
+                    else if (selectedMark != null) { selectedMark.Latitude = geo.Value.Lat; selectedMark.Longitude = geo.Value.Lon; }
                     mapView.Invalidate();
                 }
                 break;
@@ -528,6 +617,48 @@ public sealed class TrackWalkPage : ContentPage
         };
         g.Add(noteTextEntry, 0, 0);
         g.Add(delete, 1, 0);
+        return g;
+    }
+
+    private Grid BuildMarkPropsRow()
+    {
+        markShapePicker.ItemsSource = new List<string> { "Square (cone)", "Triangle (pointer)" };
+        markShapePicker.SelectedIndexChanged += (_, _) =>
+        {
+            if (!updatingFields && selectedMark != null)
+            {
+                selectedMark.Shape = markShapePicker.SelectedIndex == 1 ? MarkShape.Triangle : MarkShape.Square;
+                mapView.Invalidate();
+            }
+        };
+        markOrientEntry.TextChanged += (_, _) =>
+        {
+            if (!updatingFields && selectedMark != null && float.TryParse(markOrientEntry.Text, out float o))
+            {
+                selectedMark.Orientation = ((o % 360f) + 360f) % 360f;
+                mapView.Invalidate();
+            }
+        };
+        Button delete = new() { Text = "Delete mark" };
+        delete.Clicked += (_, _) =>
+        {
+            if (selectedMark != null) { map.Marks.Remove(selectedMark); ClearSelection(); }
+        };
+        Grid g = new()
+        {
+            ColumnSpacing = 6,
+            ColumnDefinitions =
+            {
+                new(GridLength.Auto), new(GridLength.Auto),
+                new(GridLength.Auto), new(GridLength.Auto),
+                new(GridLength.Star)
+            }
+        };
+        g.Add(new Label { Text = "Shape", VerticalOptions = LayoutOptions.Center }, 0, 0);
+        g.Add(markShapePicker, 1, 0);
+        g.Add(new Label { Text = "Orient°", VerticalOptions = LayoutOptions.Center }, 2, 0);
+        g.Add(markOrientEntry, 3, 0);
+        g.Add(delete, 4, 0);
         return g;
     }
 

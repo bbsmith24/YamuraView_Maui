@@ -68,6 +68,17 @@ namespace YamuraView.Core
             }
             root.Add(notes);
 
+            XElement marks = new("Marks");
+            foreach (TrackMark mark in map.Marks)
+            {
+                marks.Add(new XElement("Mark",
+                    new XAttribute("lat", Fmt(mark.Latitude)),
+                    new XAttribute("lon", Fmt(mark.Longitude)),
+                    new XAttribute("shape", mark.Shape.ToString()),
+                    new XAttribute("orient", Fmt(mark.Orientation))));
+            }
+            root.Add(marks);
+
             new XDocument(new XDeclaration("1.0", "utf-8", "yes"), root).Save(fileName);
         }
 
@@ -138,6 +149,20 @@ namespace YamuraView.Core
                         Latitude = lat,
                         Longitude = lon,
                         Text = (string?)el.Attribute("text") ?? "",
+                    });
+                }
+            }
+
+            foreach (XElement el in root.Element("Marks")?.Elements("Mark") ?? Enumerable.Empty<XElement>())
+            {
+                if (TryDouble(el, "lat", out double lat) && TryDouble(el, "lon", out double lon))
+                {
+                    map.Marks.Add(new TrackMark
+                    {
+                        Latitude = lat,
+                        Longitude = lon,
+                        Shape = Enum.TryParse((string?)el.Attribute("shape"), out MarkShape shape) ? shape : MarkShape.Square,
+                        Orientation = TryFloat(el, "orient", out float o) ? o : 0f,
                     });
                 }
             }

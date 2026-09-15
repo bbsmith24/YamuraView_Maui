@@ -58,6 +58,8 @@ public class XYChartDrawable : IDrawable
     /// arrow and label) and note pins - drawn on top of the run traces. Only drawn when this
     /// chart's axes are Longitude (X) / Latitude (Y), i.e. the Track Map; null draws nothing.</summary>
     public TrackMap? OverlayMap { get; set; }
+    /// <summary>Fill color for overlay mark squares (cones/apexes); default orange.</summary>
+    public Color MarkColor { get; set; } = Colors.Orange;
 
     private const float FeetToMeters = 0.3048f;
     private const float MetersPerDegreeLatitude = 111320f;
@@ -670,6 +672,11 @@ public class XYChartDrawable : IDrawable
                 float nx = scaleX((float)note.Longitude), ny = scaleY((float)note.Latitude);
                 canvas.FillColor = Colors.Orange;
                 canvas.FillCircle(nx, ny, 4);
+            }
+            foreach (TrackMark mark in OverlayMap.Marks)
+            {
+                float mx = scaleX((float)mark.Longitude), my = scaleY((float)mark.Latitude);
+                TrackMarkRenderer.Draw(canvas, mx, my, 4f, mark.Orientation, mark.Shape, MarkColor, Colors.Black);
             }
             canvas.RestoreState();
         }

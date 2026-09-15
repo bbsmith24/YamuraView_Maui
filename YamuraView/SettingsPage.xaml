@@ -86,6 +86,13 @@
                 <Entry Grid.Row="4" Grid.Column="1" x:Name="TrackMapLineWidthEntry" WidthRequest="140" Keyboard="Numeric" />
             </Grid>
 
+            <Label Text="Track Map Marks" FontAttributes="Bold" />
+            <Label Text="Point-of-interest markers (cones, apexes) placed during a track walk, drawn as squares on the track map." FontSize="12" />
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Mark Color" VerticalOptions="Center" />
+                <Button Grid.Row="0" Grid.Column="1" x:Name="TrackMapMarkColorSwatch" WidthRequest="80" HeightRequest="34" BorderColor="Gray" BorderWidth="1" Clicked="OnTrackMapMarkColorClicked" />
+            </Grid>
+
             <Label Text="Channel Filters" FontAttributes="Bold" />
             <Label Text="Display-only smoothing per channel (e.g. vibration noise on G channels) - the logged data is unchanged. Window is in samples, centered on each point." FontSize="12" />
             <VerticalStackLayout x:Name="ChannelFilterLayout" Spacing="4" />

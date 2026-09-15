@@ -6,7 +6,7 @@ public partial class SettingsPage : ContentPage
 {
     private const int DefaultFilterWindow = 9;
 
-    private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave;
+    private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave;
     private readonly Action<IReadOnlyList<string>> onRemoveRuns;
     private readonly List<Button> swatchButtons = new();
     private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
@@ -34,11 +34,12 @@ public partial class SettingsPage : ContentPage
         Color trackMapStartColor,
         Color trackMapSectorColor,
         Color trackMapFinishColor,
+        Color trackMapMarkColor,
         float trackMapLineWidth,
         IReadOnlyList<string> runNames,
         IReadOnlyList<string> channelNames,
         IReadOnlyDictionary<string, ChannelFilterSettings> channelFilters,
-        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave,
+        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave,
         Action<IReadOnlyList<string>> onRemoveRuns)
     {
         InitializeComponent();
@@ -53,6 +54,7 @@ public partial class SettingsPage : ContentPage
         TrackMapStartColorSwatch.BackgroundColor = trackMapStartColor;
         TrackMapSectorColorSwatch.BackgroundColor = trackMapSectorColor;
         TrackMapFinishColorSwatch.BackgroundColor = trackMapFinishColor;
+        TrackMapMarkColorSwatch.BackgroundColor = trackMapMarkColor;
         TrackMapLineWidthEntry.Text = trackMapLineWidth.ToString(System.Globalization.CultureInfo.InvariantCulture);
         ConfigPathEntry.Text = configFilePath;
         AutoloadFolderEntry.Text = autoloadFolderPath;
@@ -188,6 +190,12 @@ public partial class SettingsPage : ContentPage
         await Navigation.PushModalAsync(page);
     }
 
+    private async void OnTrackMapMarkColorClicked(object? sender, EventArgs e)
+    {
+        ColorPickerPage page = new(picked => TrackMapMarkColorSwatch.BackgroundColor = picked);
+        await Navigation.PushModalAsync(page);
+    }
+
     private async void OnBrowseConfigClicked(object? sender, EventArgs e)
     {
         try
@@ -312,6 +320,7 @@ public partial class SettingsPage : ContentPage
         Color trackMapStartColor = TrackMapStartColorSwatch.BackgroundColor ?? Colors.LimeGreen;
         Color trackMapSectorColor = TrackMapSectorColorSwatch.BackgroundColor ?? Colors.Gold;
         Color trackMapFinishColor = TrackMapFinishColorSwatch.BackgroundColor ?? Colors.Red;
+        Color trackMapMarkColor = TrackMapMarkColorSwatch.BackgroundColor ?? Colors.Orange;
         // must be positive; unparseable or non-positive keeps the previous value
         float trackMapLineWidth = float.TryParse(TrackMapLineWidthEntry.Text?.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float lineWidth) && lineWidth > 0
             ? lineWidth
@@ -353,7 +362,7 @@ public partial class SettingsPage : ContentPage
             onRemoveRuns(runsToRemove);
         }
 
-        onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapLineWidth, channelFilters);
+        onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapMarkColor, trackMapLineWidth, channelFilters);
         await Navigation.PopModalAsync();
     }
 }

@@ -18,9 +18,12 @@ public sealed class TrackWalkDrawable : IDrawable
     public TrackMap Map { get; set; } = new();
     /// <summary>The live GPS fix, drawn as a marker; null when not recording / no fix yet.</summary>
     public (double Lat, double Lon)? CurrentPosition { get; set; }
-    /// <summary>The currently selected line/note, drawn highlighted.</summary>
+    /// <summary>The currently selected line/note/mark, drawn highlighted.</summary>
     public TrackLine? SelectedLine { get; set; }
     public TrackNote? SelectedNote { get; set; }
+    public TrackMark? SelectedMark { get; set; }
+    /// <summary>Fill color for point-of-interest mark squares (cones/apexes).</summary>
+    public Color MarkColor { get; set; } = Colors.Orange;
 
     // cached transform from the last Draw, for pixel<->geo conversion
     private bool hasTransform;
@@ -48,6 +51,10 @@ public sealed class TrackWalkDrawable : IDrawable
         foreach (TrackNote note in Map.Notes)
         {
             all.Add((note.Latitude, note.Longitude));
+        }
+        foreach (TrackMark mark in Map.Marks)
+        {
+            all.Add((mark.Latitude, mark.Longitude));
         }
         if (CurrentPosition.HasValue)
         {
@@ -160,6 +167,16 @@ public sealed class TrackWalkDrawable : IDrawable
             canvas.StrokeColor = Colors.Black;
             canvas.StrokeSize = 1;
             canvas.DrawCircle(p.X, p.Y, selected ? 7 : 5);
+        }
+
+        // marks (points of interest) as squares / triangles, rotated by orientation
+        foreach (TrackMark mark in Map.Marks)
+        {
+            PointF p = ToPixel(mark.Latitude, mark.Longitude);
+            bool selected = ReferenceEquals(mark, SelectedMark);
+            float half = selected ? 7f : 5f;
+            TrackMarkRenderer.Draw(canvas, p.X, p.Y, half, mark.Orientation, mark.Shape,
+                selected ? Colors.White : MarkColor, Colors.Black);
         }
 
         // live position
