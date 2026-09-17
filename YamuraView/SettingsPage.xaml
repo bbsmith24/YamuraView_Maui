@@ -101,6 +101,22 @@
             <Label Text="Check the runs to remove - they're unloaded when you Save (reload the log file to get one back)." FontSize="12" />
             <VerticalStackLayout x:Name="RunRemovalLayout" Spacing="4" />
 
+            <Label Text="Export Data" FontAttributes="Bold" />
+            <Label Text="Write each checked run to a CSV or TSV file next to its log file (same name, new extension). The first row is the channel names, starting with Time." FontSize="12" />
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Format" VerticalOptions="Center" />
+                <Picker Grid.Row="0" Grid.Column="1" x:Name="ExportFormatPicker" WidthRequest="140">
+                    <Picker.ItemsSource>
+                        <x:Array Type="{x:Type x:String}">
+                            <x:String>CSV</x:String>
+                            <x:String>TSV</x:String>
+                        </x:Array>
+                    </Picker.ItemsSource>
+                </Picker>
+            </Grid>
+            <VerticalStackLayout x:Name="ExportRunLayout" Spacing="4" />
+            <Button Text="Export" Clicked="OnExportClicked" HorizontalOptions="Start" />
+
             <Label Text="Log" FontAttributes="Bold" />
             <Button Text="View Log" Clicked="OnViewLogClicked" HorizontalOptions="Start" />
 

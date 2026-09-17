@@ -21,6 +21,8 @@ public static class LogFilePicker
         picker.FileTypeFilter.Add(".txt");
         picker.FileTypeFilter.Add(".ylg");
         picker.FileTypeFilter.Add(".yl5");
+        picker.FileTypeFilter.Add(".csv");
+        picker.FileTypeFilter.Add(".tsv");
 
         Microsoft.UI.Xaml.Window? window = (Application.Current?.Windows[0].Handler?.PlatformView) as Microsoft.UI.Xaml.Window;
         if (window != null)

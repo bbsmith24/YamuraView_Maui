@@ -1035,6 +1035,8 @@ public partial class MainPage : ContentPage
                 ".txt" => await Task.Run(() => parser.ReadTXTFile(dataLogger, filePath)),
                 ".ylg" => await Task.Run(() => parser.ReadYLGFile(dataLogger, filePath)),
                 ".yl5" => await Task.Run(() => parser.ReadYL5File(dataLogger, filePath)),
+                ".csv" => await Task.Run(() => parser.ReadDelimitedFile(dataLogger, filePath, ',')),
+                ".tsv" => await Task.Run(() => parser.ReadDelimitedFile(dataLogger, filePath, '\t')),
                 _ => throw new NotSupportedException($"Unsupported file type \"{extension}\".")
             };
             AppLogger.Log($"Opened file {filePath}");
@@ -1827,8 +1829,53 @@ public partial class MainPage : ContentPage
                 }
                 RefreshCharts();
             },
-            RemoveRuns);
+            RemoveRuns,
+            ExportRunsAsync);
         await Navigation.PushModalAsync(page);
+    }
+
+    /// <summary>
+    /// Writes each named run to a delimited file (CSV/TSV) alongside its source log file, using
+    /// the same base name with the new extension. Returns a summary of what was written and any
+    /// failures, for the Settings page to show. Called from the Settings dialog's Export button.
+    /// </summary>
+    private async Task<string> ExportRunsAsync(IReadOnlyList<string> runNames, DelimitedFormat format)
+    {
+        List<string> written = new();
+        List<string> failed = new();
+        foreach (string runName in runNames)
+        {
+            RunData? run = dataLogger.runData.FirstOrDefault(r => r.runName == runName);
+            if (run == null)
+            {
+                failed.Add($"{runName}: run not loaded");
+                continue;
+            }
+            try
+            {
+                string outputPath = LogFileExporter.OutputPath(run, format);
+                string text = LogFileExporter.BuildText(run, format);
+                await File.WriteAllTextAsync(outputPath, text);
+                AppLogger.Log($"Exported run '{runName}' to {outputPath}");
+                written.Add(outputPath);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log($"Export of run '{runName}' failed: {ex.Message}");
+                failed.Add($"{runName}: {ex.Message}");
+            }
+        }
+
+        List<string> parts = new();
+        if (written.Count > 0)
+        {
+            parts.Add($"Exported {written.Count} file(s):\n{string.Join("\n", written)}");
+        }
+        if (failed.Count > 0)
+        {
+            parts.Add($"Failed {failed.Count}:\n{string.Join("\n", failed)}");
+        }
+        return parts.Count > 0 ? string.Join("\n\n", parts) : "Nothing was exported.";
     }
 
     private async void OnAboutClicked(object? sender, EventArgs e)

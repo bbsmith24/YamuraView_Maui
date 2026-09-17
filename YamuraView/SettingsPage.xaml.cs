@@ -8,8 +8,10 @@ public partial class SettingsPage : ContentPage
 
     private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave;
     private readonly Action<IReadOnlyList<string>> onRemoveRuns;
+    private readonly Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport;
     private readonly List<Button> swatchButtons = new();
     private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
+    private readonly List<(CheckBox Box, string RunName)> exportRunChecks = new();
     private readonly int initialTractionCircleTrailPoints;
     private readonly float initialTrackMapGridSpacing;
     private readonly float initialTrackMapLineWidth;
@@ -40,11 +42,14 @@ public partial class SettingsPage : ContentPage
         IReadOnlyList<string> channelNames,
         IReadOnlyDictionary<string, ChannelFilterSettings> channelFilters,
         Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave,
-        Action<IReadOnlyList<string>> onRemoveRuns)
+        Action<IReadOnlyList<string>> onRemoveRuns,
+        Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport)
     {
         InitializeComponent();
         this.onSave = onSave;
         this.onRemoveRuns = onRemoveRuns;
+        this.onExport = onExport;
+        ExportFormatPicker.SelectedIndex = 0;
         this.channelFilters = new Dictionary<string, ChannelFilterSettings>(channelFilters);
         initialTractionCircleTrailPoints = tractionCircleTrailPoints;
         initialTrackMapGridSpacing = trackMapGridSpacing;
@@ -154,6 +159,24 @@ public partial class SettingsPage : ContentPage
             runRemovalChecks.Add((box, runName));
             RunRemovalLayout.Children.Add(row);
         }
+
+        if (runNames.Count == 0)
+        {
+            ExportRunLayout.Children.Add(new Label { Text = "(no runs loaded)", FontSize = 12 });
+        }
+        foreach (string runName in runNames)
+        {
+            CheckBox box = new() { VerticalOptions = LayoutOptions.Center };
+            Label label = new() { Text = runName, VerticalOptions = LayoutOptions.Center };
+            TapGestureRecognizer tap = new();
+            tap.Tapped += (_, _) => box.IsChecked = !box.IsChecked;
+            label.GestureRecognizers.Add(tap);
+            HorizontalStackLayout row = new() { Spacing = 4 };
+            row.Add(box);
+            row.Add(label);
+            exportRunChecks.Add((box, runName));
+            ExportRunLayout.Children.Add(row);
+        }
     }
 
     // shared Line=0 / Point=1 / Line + Points=2 mapping for the Strip Chart and Track Map
@@ -242,6 +265,27 @@ public partial class SettingsPage : ContentPage
         {
             AppLogger.Log($"Browse Failed: {ex.Message}");
             await DisplayAlertAsync("Browse Failed", ex.Message, "OK");
+        }
+    }
+
+    private async void OnExportClicked(object? sender, EventArgs e)
+    {
+        List<string> runsToExport = exportRunChecks.Where(c => c.Box.IsChecked).Select(c => c.RunName).ToList();
+        if (runsToExport.Count == 0)
+        {
+            await DisplayAlertAsync("Export", "Check at least one run to export.", "OK");
+            return;
+        }
+        DelimitedFormat format = ExportFormatPicker.SelectedIndex == 1 ? DelimitedFormat.Tsv : DelimitedFormat.Csv;
+        try
+        {
+            string message = await onExport(runsToExport, format);
+            await DisplayAlertAsync("Export", message, "OK");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"Export failed: {ex.Message}");
+            await DisplayAlertAsync("Export Failed", ex.Message, "OK");
         }
     }
 

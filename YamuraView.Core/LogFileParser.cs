@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace YamuraView.Core
@@ -181,6 +182,141 @@ namespace YamuraView.Core
             readTemp.Close();
             File.Delete(tempLogFile);
             return "";
+        }
+
+        /// <summary>
+        /// Reads a delimited text log - the CSV/TSV files written by <see cref="LogFileExporter"/>,
+        /// or any file with the same shape - into <paramref name="dataLogger"/>. The first row is
+        /// the header: its first column is Time (the sample timestamp in seconds) and each
+        /// remaining column is a channel name. Each following row is one timestamp followed by
+        /// that channel's value at the timestamp; an empty cell means the channel has no sample
+        /// there. One reader serves both CSV and TSV - only <paramref name="delimiter"/> differs
+        /// (',' for CSV, '\t' for TSV). Returns any non-fatal parse warnings.
+        /// </summary>
+        public string ReadDelimitedFile(DataLogger dataLogger, string fileName, char delimiter)
+        {
+            StringBuilder errStr = new();
+            string runName = GetFileName(fileName, false);
+
+            dataLogger.runData.Add(new RunData(runName));
+            int runIdx = dataLogger.runData.Count - 1;
+            dataLogger.runData[runIdx].fileName = Path.GetFullPath(fileName);
+            dataLogger.runData[runIdx].runName = runName;
+            dataLogger.runData[runIdx].AddChannel("Time", "Timestamp", "Internal", runName, 1.0F);
+
+            using StreamReader reader = new StreamReader(fileName, true);
+
+            string? headerLine = reader.ReadLine();
+            if (headerLine == null)
+            {
+                AppendParseError(errStr, $"ReadDelimitedFile: {fileName} is empty");
+                return errStr.ToString();
+            }
+            // header[0] is the Time column (skipped - Time is added above); header[1..] are
+            // channel names, added as channels up front so column order is fixed for every row
+            List<string> header = SplitDelimitedLine(headerLine, delimiter);
+            for (int col = 1; col < header.Count; col++)
+            {
+                string channelName = header[col];
+                if (channelName.Length == 0 || channelName.Equals("Time", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                dataLogger.runData[runIdx].AddChannel(channelName, channelName, "Imported", runName, 1.0F);
+            }
+
+            int lineNumber = 1;
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                lineNumber++;
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+                List<string> fields = SplitDelimitedLine(line, delimiter);
+                if (fields.Count == 0 || fields[0].Length == 0)
+                {
+                    continue;
+                }
+                if (!float.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float timestampSeconds))
+                {
+                    AppendParseError(errStr, $"ReadDelimitedFile: {fileName} line {lineNumber}: bad timestamp '{fields[0]}'");
+                    continue;
+                }
+                dataLogger.runData[runIdx].channels["Time"].AddPoint(timestampSeconds, timestampSeconds);
+
+                for (int col = 1; col < header.Count && col < fields.Count; col++)
+                {
+                    string channelName = header[col];
+                    if (channelName.Length == 0 || !dataLogger.runData[runIdx].channels.ContainsKey(channelName))
+                    {
+                        continue;
+                    }
+                    string cell = fields[col];
+                    if (cell.Length == 0)
+                    {
+                        continue; // no sample for this channel at this timestamp
+                    }
+                    if (!float.TryParse(cell, NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
+                    {
+                        AppendParseError(errStr, $"ReadDelimitedFile: {fileName} line {lineNumber}: bad value '{cell}' for channel '{channelName}'");
+                        continue;
+                    }
+                    dataLogger.runData[runIdx].channels[channelName].AddPoint(timestampSeconds, value);
+                }
+            }
+            return errStr.ToString();
+        }
+
+        /// <summary>
+        /// Splits one delimited line into fields, honoring double-quote quoting (a quoted field
+        /// may contain the delimiter, and "" is an escaped quote) as written by CSV exporters.
+        /// TSV data has no quoting, so this behaves as a plain split there.
+        /// </summary>
+        private static List<string> SplitDelimitedLine(string line, char delimiter)
+        {
+            List<string> fields = new();
+            StringBuilder field = new();
+            bool inQuotes = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < line.Length && line[i + 1] == '"')
+                        {
+                            field.Append('"');
+                            i++;
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        field.Append(c);
+                    }
+                }
+                else if (c == '"')
+                {
+                    inQuotes = true;
+                }
+                else if (c == delimiter)
+                {
+                    fields.Add(field.ToString());
+                    field.Clear();
+                }
+                else
+                {
+                    field.Append(c);
+                }
+            }
+            fields.Add(field.ToString());
+            return fields;
         }
 
         /// <summary>
