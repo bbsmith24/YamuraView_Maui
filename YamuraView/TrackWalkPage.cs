@@ -46,6 +46,7 @@ public sealed class TrackWalkPage : ContentPage
     private bool updatingFields; // guards entry-change handlers while we set values programmatically
 
     private readonly Button recordButton = new() { Text = "● Record" };
+    private Button? dropFinishButton; // reference kept so it can be disabled in circuit mode
     private readonly Entry nameEntry = new() { Placeholder = "Track name", WidthRequest = 160 };
     private readonly Picker unitsPicker = new() { WidthRequest = 90 };
     private readonly Switch sameStartFinishSwitch = new();
@@ -88,10 +89,11 @@ public sealed class TrackWalkPage : ContentPage
         Label instructions = new()
         {
             Text = allowRecording
-                ? "Tap Record and walk the track to capture the GPS trail. Then pick a line type "
-                    + "and tap the trail to drop Start / Sector / Finish lines and Notes; tap Select and "
-                    + "drag to reposition, and edit heading/width below. Save writes a .ytm you can import "
-                    + "on any device for start, finish, and delta timing."
+                ? "Tap Record and walk the track to capture the GPS trail. As you walk over each "
+                    + "point, use Drop at GPS (Start / Sector / Finish here) to stamp a line at your "
+                    + "current location - or pick a line type and tap the trail to place lines and Notes, "
+                    + "during or after the walk. Tap Select and drag to reposition, and edit heading/width "
+                    + "below. Save writes a .ytm you can import on any device for start, finish, and delta timing."
                 : "The trail is the run's recorded GPS. Pick a line type and tap the trail to drop "
                     + "Start / Sector / Finish lines and Notes; tap Select and drag to reposition, and "
                     + "edit heading/width below. Save writes a .ytm you can import on any device for "
@@ -147,6 +149,22 @@ public sealed class TrackWalkPage : ContentPage
         markButton.Clicked += OnMarkLocationClicked;
         toolRow.Add(markButton);
 
+        // "Drop at GPS" actions: stamp a line at the current GPS fix as you walk over each point
+        // (hands-free, no need to tap a tiny trail on screen); usable after the walk too, falling
+        // back to the view center to then drag into place. Only meaningful with live GPS, so this
+        // row is shown for a live track walk, not the from-run editor.
+        FlexLayout dropRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, IsVisible = allowRecording };
+        dropRow.Add(new Label { Text = "Drop at GPS:", VerticalOptions = LayoutOptions.Center, Margin = new Thickness(0, 0, 8, 6) });
+        Button dropStart = new() { Text = "Start here", Margin = new Thickness(0, 0, 6, 6) };
+        dropStart.Clicked += (_, _) => OnDropLineHereClicked(LineType.Start);
+        dropRow.Add(dropStart);
+        Button dropSector = new() { Text = "Sector here", Margin = new Thickness(0, 0, 6, 6) };
+        dropSector.Clicked += (_, _) => OnDropLineHereClicked(LineType.Sector);
+        dropRow.Add(dropSector);
+        dropFinishButton = new() { Text = "Finish here", Margin = new Thickness(0, 0, 6, 6) };
+        dropFinishButton.Clicked += (_, _) => OnDropLineHereClicked(LineType.Finish);
+        dropRow.Add(dropFinishButton);
+
         // gestures: Tap places (a placement tool) or selects (Select); Pan drags the selection
         TapGestureRecognizer tap = new();
         tap.Tapped += (_, e) => OnMapTapped(e.GetPosition(mapView));
@@ -180,6 +198,7 @@ public sealed class TrackWalkPage : ContentPage
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
@@ -190,12 +209,13 @@ public sealed class TrackWalkPage : ContentPage
         layout.Add(instructions, 0, 1);
         layout.Add(recordRow, 0, 2);
         layout.Add(toolRow, 0, 3);
-        layout.Add(mapView, 0, 4);
-        layout.Add(selectionLabel, 0, 5);
-        layout.Add(linePropsRow, 0, 6);
-        layout.Add(notePropsRow, 0, 6); // same row; only one visible at a time
-        layout.Add(markPropsRow, 0, 6);
-        layout.Add(buttonRow, 0, 7);
+        layout.Add(dropRow, 0, 4);
+        layout.Add(mapView, 0, 5);
+        layout.Add(selectionLabel, 0, 6);
+        layout.Add(linePropsRow, 0, 7);
+        layout.Add(notePropsRow, 0, 7); // same row; only one visible at a time
+        layout.Add(markPropsRow, 0, 7);
+        layout.Add(buttonRow, 0, 8);
         Content = layout;
 
         sameStartFinishSwitch.IsToggled = map.SameStartFinish;
@@ -221,6 +241,11 @@ public sealed class TrackWalkPage : ContentPage
             b.IsEnabled = enabled;
             b.BackgroundColor = t == tool ? Colors.CornflowerBlue : null;
             b.TextColor = t == tool ? Colors.White : null;
+        }
+        // the drop-at-GPS Finish action follows the same circuit rule as the +Finish tool
+        if (dropFinishButton != null)
+        {
+            dropFinishButton.IsEnabled = !map.SameStartFinish;
         }
     }
 
@@ -335,24 +360,62 @@ public sealed class TrackWalkPage : ContentPage
                 Tool.Finish => LineType.Finish,
                 _ => LineType.Sector,
             };
-            // only one Start / Finish; replace an existing one
-            if (type is LineType.Start or LineType.Finish)
-            {
-                map.Lines.RemoveAll(l => l.Type == type);
-            }
-            TrackLine line = new()
-            {
-                Type = type,
-                Latitude = geo.Value.Lat,
-                Longitude = geo.Value.Lon,
-                Heading = DefaultHeadingAt(geo.Value.Lat, geo.Value.Lon),
-                Width = DefaultWidth,
-                Order = type == LineType.Sector ? NextSectorOrder() : 0,
-            };
-            map.Lines.Add(line);
+            TrackLine line = PlaceLine(type, geo.Value.Lat, geo.Value.Lon);
             SwitchToSelect();
             SelectLine(line);
         }
+        mapView.Invalidate();
+    }
+
+    /// <summary>
+    /// Creates a track line of <paramref name="type"/> at the given position - shared by
+    /// tap-to-place and the drop-at-GPS buttons. Start/Finish are singular (an existing one is
+    /// replaced); sectors are auto-numbered in placement order. Heading defaults to the walk
+    /// direction near the point.
+    /// </summary>
+    private TrackLine PlaceLine(LineType type, double lat, double lon)
+    {
+        // only one Start / Finish; replace an existing one
+        if (type is LineType.Start or LineType.Finish)
+        {
+            map.Lines.RemoveAll(l => l.Type == type);
+        }
+        TrackLine line = new()
+        {
+            Type = type,
+            Latitude = lat,
+            Longitude = lon,
+            Heading = DefaultHeadingAt(lat, lon),
+            Width = DefaultWidth,
+            Order = type == LineType.Sector ? NextSectorOrder() : 0,
+        };
+        map.Lines.Add(line);
+        return line;
+    }
+
+    /// <summary>
+    /// Drops a Start/Sector/Finish line at the current GPS fix (while recording) or, failing that,
+    /// at the center of the current view - so you can stamp lines hands-free as you walk over each
+    /// point, and still add them after the walk (then drag to fine-tune). Mirrors
+    /// <see cref="OnMarkLocationClicked"/>.
+    /// </summary>
+    private void OnDropLineHereClicked(LineType type)
+    {
+        // a circuit has no separate Finish line
+        if (type == LineType.Finish && map.SameStartFinish)
+        {
+            return;
+        }
+        (double Lat, double Lon)? geo = drawable.CurrentPosition is { } cur
+            ? (cur.Lat, cur.Lon)
+            : drawable.PixelToGeo(new Point(mapView.Width / 2, mapView.Height / 2));
+        if (!geo.HasValue)
+        {
+            return;
+        }
+        TrackLine line = PlaceLine(type, geo.Value.Lat, geo.Value.Lon);
+        SwitchToSelect();
+        SelectLine(line);
         mapView.Invalidate();
     }
 
