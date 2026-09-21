@@ -1895,9 +1895,10 @@ public partial class MainPage : ContentPage
     {
         const string trackWalk = "Track Walk";
         const string mapFromRun = "Track Map from Run";
+        const string editMap = "Open/Edit Track Map";
         const string loadMap = "Load Track Map";
 
-        string choice = await DisplayActionSheetAsync("Track Map", "Cancel", null, trackWalk, mapFromRun, loadMap);
+        string choice = await DisplayActionSheetAsync("Track Map", "Cancel", null, trackWalk, mapFromRun, editMap, loadMap);
 
         switch (choice)
         {
@@ -1907,10 +1908,54 @@ public partial class MainPage : ContentPage
             case mapFromRun:
                 OnTrackMapFromRunClicked(sender, e);
                 break;
+            case editMap:
+                OnEditTrackMapClicked(sender, e);
+                break;
             case loadMap:
                 OnLoadTrackMapClicked(sender, e);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Opens an existing .ytm in the track-map editor so its start/finish/sector lines, notes,
+    /// and marks can be changed and saved. Recording is enabled, so on a GPS device you can also
+    /// add lines/marks at your current position (or by tapping the trail) - see
+    /// <see cref="TrackWalkPage"/>. Distinct from "Load Track Map", which applies a map for
+    /// alignment/overlay rather than editing it.
+    /// </summary>
+    private async void OnEditTrackMapClicked(object? sender, EventArgs e)
+    {
+        string? path;
+        try
+        {
+            path = await TrackMapFilePicker.PickOpenAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"OnEditTrackMapClicked: picker failed: {ex.Message}");
+            await DisplayAlertAsync("Edit Track Map", ex.Message, "OK");
+            return;
+        }
+        if (path == null)
+        {
+            return;
+        }
+
+        TrackMap map;
+        try
+        {
+            map = TrackMapFile.Read(path);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"OnEditTrackMapClicked: read failed: {ex.Message}");
+            await DisplayAlertAsync("Edit Track Map", $"Couldn't read the track map: {ex.Message}", "OK");
+            return;
+        }
+
+        AppLogger.Log($"Editing track map '{map.Name}' from {path} ({map.Lines.Count} lines, {map.Notes.Count} notes, {map.Marks.Count} marks)");
+        await Navigation.PushModalAsync(new TrackWalkPage(map, allowRecording: true) { MarkColor = trackMapMarkColor });
     }
 
     /// <summary>Opens the track-walk capture page (records GPS into a .ytm track map). Only
