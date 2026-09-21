@@ -13,7 +13,9 @@ public static class TrackMapFilePicker
 {
     /// <summary>Saves <paramref name="map"/> as a ".ytm". Returns the written path, or null if
     /// the user cancelled. On mobile/Mac the file is written to the cache and offered via the
-    /// share sheet.</summary>
+    /// share sheet. The map's <see cref="TrackMap.Name"/> attribute is set to the saved file's
+    /// base name before writing, so the name stored in the file always matches the file the user
+    /// actually chose (they can rename it in the save dialog).</summary>
     public static async Task<string?> SaveAsync(TrackMap map, string suggestedName)
     {
         string safeName = MakeSafeFileName(string.IsNullOrWhiteSpace(suggestedName) ? "TrackMap" : suggestedName);
@@ -37,10 +39,14 @@ public static class TrackMapFilePicker
         {
             return null;
         }
+        // sync the map's Name attribute to the file the user actually chose (they may have
+        // renamed it in the dialog), so the name stored in the file matches the file name
+        map.Name = Path.GetFileNameWithoutExtension(file.Path);
         TrackMapFile.Write(map, file.Path);
         return file.Path;
 #else
         string path = Path.Combine(FileSystem.CacheDirectory, safeName + TrackMapFile.Extension);
+        map.Name = Path.GetFileNameWithoutExtension(path);
         TrackMapFile.Write(map, path);
         await Share.Default.RequestAsync(new ShareFileRequest
         {
