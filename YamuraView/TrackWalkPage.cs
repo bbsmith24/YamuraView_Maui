@@ -13,7 +13,7 @@ namespace YamuraView;
 /// </summary>
 public sealed class TrackWalkPage : ContentPage
 {
-    private enum Tool { Select, Start, Sector, Finish, Note }
+    private enum Tool { Select, Start, Sector, Finish, Note, Mark }
 
     private const double SelectPixelThreshold = 24.0;
     private const float DefaultWidth = 30f; // in the map's current units
@@ -46,12 +46,15 @@ public sealed class TrackWalkPage : ContentPage
     private bool updatingFields; // guards entry-change handlers while we set values programmatically
 
     private readonly Button recordButton = new() { Text = "● Record" };
-    private Button? dropFinishButton; // reference kept so it can be disabled in circuit mode
+    // two mode rows with the same five choices: "Select" places/edits by tapping the map
+    // (enabled only when NOT recording); "Drop at GPS" stamps at the live fix (enabled only
+    // when recording). Tracked so UpdateToolButtons can enable/disable each set by mode.
+    private readonly List<(Tool Tool, Button Button)> selectButtons = new();
+    private readonly List<(Tool Tool, Button Button)> gpsButtons = new();
     private readonly Entry nameEntry = new() { Placeholder = "Track name", WidthRequest = 160 };
     private readonly Picker unitsPicker = new() { WidthRequest = 90 };
     private readonly Switch sameStartFinishSwitch = new();
     private readonly Label selectionLabel = new() { VerticalOptions = LayoutOptions.Center };
-    private readonly List<(Tool Tool, Button Button)> toolButtons = new();
 
     private readonly Grid linePropsRow;
     private readonly Grid notePropsRow;
@@ -89,14 +92,14 @@ public sealed class TrackWalkPage : ContentPage
         Label instructions = new()
         {
             Text = allowRecording
-                ? "Tap Record and walk the track to capture the GPS trail. As you walk over each "
-                    + "point, use Drop at GPS (Start / Sector / Finish here) to stamp a line at your "
-                    + "current location - or pick a line type and tap the trail to place lines and Notes, "
-                    + "during or after the walk. Tap Select and drag to reposition, and edit heading/width "
-                    + "below. Save writes a .ytm you can import on any device for start, finish, and delta timing."
-                : "The trail is the run's recorded GPS. Pick a line type and tap the trail to drop "
-                    + "Start / Sector / Finish lines and Notes; tap Select and drag to reposition, and "
-                    + "edit heading/width below. Save writes a .ytm you can import on any device for "
+                ? "Select: pick Start / Sector / Mark / Note / Finish and tap the map to place it; with "
+                    + "none picked, tap an item to select and drag it (edit heading/width below). Tap Record "
+                    + "to capture a GPS trail - while recording, Drop at GPS stamps the same items at your "
+                    + "current position. Save writes a .ytm you can import on any device for start, finish, "
+                    + "and delta timing."
+                : "The trail is the run's recorded GPS. Select: pick Start / Sector / Mark / Note / Finish "
+                    + "and tap the trail to place it; with none picked, tap an item to select and drag it "
+                    + "(edit heading/width below). Save writes a .ytm you can import on any device for "
                     + "start, finish, and delta timing.",
             FontSize = 13
         };
@@ -137,33 +140,26 @@ public sealed class TrackWalkPage : ContentPage
         recordRow.Add(new Label { Text = "Circuit (start=finish)", VerticalOptions = LayoutOptions.Center });
         recordRow.Add(sameStartFinishSwitch);
 
-        FlexLayout toolRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap };
-        AddToolButton(toolRow, Tool.Select, "Select");
-        AddToolButton(toolRow, Tool.Start, "+ Start");
-        AddToolButton(toolRow, Tool.Sector, "+ Sector");
-        AddToolButton(toolRow, Tool.Finish, "+ Finish");
-        AddToolButton(toolRow, Tool.Note, "+ Note");
-        // "Mark Location" is an action, not a placement mode: it drops a mark at the current GPS
-        // fix (while recording) or the map center, so you can flag a cone/apex as you walk past it.
-        Button markButton = new() { Text = "Mark Location", Margin = new Thickness(0, 0, 6, 6) };
-        markButton.Clicked += OnMarkLocationClicked;
-        toolRow.Add(markButton);
+        // "Select" mode: pick a type and tap the map to place it; with no type picked, tap an
+        // item to select and drag it. Enabled only when NOT recording. The label replaces the old
+        // "Select" button (pure select is the state when no type is active).
+        FlexLayout selectRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap };
+        selectRow.Add(new Label { Text = "Select:", VerticalOptions = LayoutOptions.Center, Margin = new Thickness(0, 0, 8, 6) });
+        AddSelectButton(selectRow, Tool.Start, "Start");
+        AddSelectButton(selectRow, Tool.Sector, "Sector");
+        AddSelectButton(selectRow, Tool.Mark, "Mark");
+        AddSelectButton(selectRow, Tool.Note, "Note");
+        AddSelectButton(selectRow, Tool.Finish, "Finish");
 
-        // "Drop at GPS" actions: stamp a line at the current GPS fix as you walk over each point
-        // (hands-free, no need to tap a tiny trail on screen); usable after the walk too, falling
-        // back to the view center to then drag into place. Only meaningful with live GPS, so this
-        // row is shown for a live track walk, not the from-run editor.
-        FlexLayout dropRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, IsVisible = allowRecording };
+        // "Drop at GPS" mode: stamp the same item at the live GPS fix as you walk over each point.
+        // Enabled only when recording (that's when the live position streams).
+        FlexLayout dropRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap };
         dropRow.Add(new Label { Text = "Drop at GPS:", VerticalOptions = LayoutOptions.Center, Margin = new Thickness(0, 0, 8, 6) });
-        Button dropStart = new() { Text = "Start here", Margin = new Thickness(0, 0, 6, 6) };
-        dropStart.Clicked += (_, _) => OnDropLineHereClicked(LineType.Start);
-        dropRow.Add(dropStart);
-        Button dropSector = new() { Text = "Sector here", Margin = new Thickness(0, 0, 6, 6) };
-        dropSector.Clicked += (_, _) => OnDropLineHereClicked(LineType.Sector);
-        dropRow.Add(dropSector);
-        dropFinishButton = new() { Text = "Finish here", Margin = new Thickness(0, 0, 6, 6) };
-        dropFinishButton.Clicked += (_, _) => OnDropLineHereClicked(LineType.Finish);
-        dropRow.Add(dropFinishButton);
+        AddGpsButton(dropRow, Tool.Start, "Start");
+        AddGpsButton(dropRow, Tool.Sector, "Sector");
+        AddGpsButton(dropRow, Tool.Mark, "Mark");
+        AddGpsButton(dropRow, Tool.Note, "Note");
+        AddGpsButton(dropRow, Tool.Finish, "Finish");
 
         // gestures: Tap places (a placement tool) or selects (Select); Pan drags the selection
         TapGestureRecognizer tap = new();
@@ -208,7 +204,7 @@ public sealed class TrackWalkPage : ContentPage
         layout.Add(header, 0, 0);
         layout.Add(instructions, 0, 1);
         layout.Add(recordRow, 0, 2);
-        layout.Add(toolRow, 0, 3);
+        layout.Add(selectRow, 0, 3);
         layout.Add(dropRow, 0, 4);
         layout.Add(mapView, 0, 5);
         layout.Add(selectionLabel, 0, 6);
@@ -225,27 +221,44 @@ public sealed class TrackWalkPage : ContentPage
 
     // ---- tool buttons ----
 
-    private void AddToolButton(Layout parent, Tool t, string text)
+    // a Select-row button toggles its placement type on/off: clicking the active one returns to
+    // pure Select (tap to select/drag). Placement happens on the next map tap (see OnMapTapped).
+    private void AddSelectButton(Layout parent, Tool t, string text)
     {
         Button b = new() { Text = text, Margin = new Thickness(0, 0, 6, 6) };
-        b.Clicked += (_, _) => { tool = t; UpdateToolButtons(); };
-        toolButtons.Add((t, b));
+        b.Clicked += (_, _) => { tool = tool == t ? Tool.Select : t; UpdateToolButtons(); };
+        selectButtons.Add((t, b));
         parent.Add(b);
     }
 
+    // a GPS-row button stamps its item at the live fix immediately (no map tap needed).
+    private void AddGpsButton(Layout parent, Tool t, string text)
+    {
+        Button b = new() { Text = text, Margin = new Thickness(0, 0, 6, 6) };
+        b.Clicked += (_, _) => DropAtGps(t);
+        gpsButtons.Add((t, b));
+        parent.Add(b);
+    }
+
+    /// <summary>
+    /// Enables the two mode rows by state: Select buttons only when NOT recording (place/edit by
+    /// tapping), GPS buttons only when recording (live fix available). Finish is also disabled in
+    /// circuit mode (start = finish). The active Select type is highlighted.
+    /// </summary>
     private void UpdateToolButtons()
     {
-        foreach ((Tool t, Button b) in toolButtons)
+        foreach ((Tool t, Button b) in selectButtons)
         {
-            bool enabled = !(t == Tool.Finish && map.SameStartFinish);
-            b.IsEnabled = enabled;
-            b.BackgroundColor = t == tool ? Colors.CornflowerBlue : null;
-            b.TextColor = t == tool ? Colors.White : null;
+            bool typeOk = !(t == Tool.Finish && map.SameStartFinish);
+            b.IsEnabled = !recording && typeOk;
+            bool active = t == tool;
+            b.BackgroundColor = active ? Colors.CornflowerBlue : null;
+            b.TextColor = active ? Colors.White : null;
         }
-        // the drop-at-GPS Finish action follows the same circuit rule as the +Finish tool
-        if (dropFinishButton != null)
+        foreach ((Tool t, Button b) in gpsButtons)
         {
-            dropFinishButton.IsEnabled = !map.SameStartFinish;
+            bool typeOk = !(t == Tool.Finish && map.SameStartFinish);
+            b.IsEnabled = recording && typeOk;
         }
     }
 
@@ -281,6 +294,9 @@ public sealed class TrackWalkPage : ContentPage
             recording = true;
             recordButton.Text = "■ Stop";
             recordButton.TextColor = Colors.Red;
+            // while recording, taps select/drag (not place); GPS buttons take over placement
+            tool = Tool.Select;
+            UpdateToolButtons();
         }
         catch (Exception ex)
         {
@@ -303,6 +319,8 @@ public sealed class TrackWalkPage : ContentPage
         }
         recordButton.Text = "● Record";
         recordButton.TextColor = null;
+        // back to not-recording: Select buttons re-enable, GPS buttons disable
+        UpdateToolButtons();
     }
 
     private void OnLocationChanged(object? sender, GeolocationLocationChangedEventArgs e)
@@ -340,31 +358,49 @@ public sealed class TrackWalkPage : ContentPage
             return;
         }
 
-        if (tool == Tool.Select)
+        switch (tool)
         {
-            SelectNearest(position.Value);
-            return;
-        }
-        if (tool == Tool.Note)
-        {
-            TrackNote note = new() { Latitude = geo.Value.Lat, Longitude = geo.Value.Lon, Text = "" };
-            map.Notes.Add(note);
-            SwitchToSelect();
-            SelectNote(note);
-        }
-        else
-        {
-            LineType type = tool switch
-            {
-                Tool.Start => LineType.Start,
-                Tool.Finish => LineType.Finish,
-                _ => LineType.Sector,
-            };
-            TrackLine line = PlaceLine(type, geo.Value.Lat, geo.Value.Lon);
-            SwitchToSelect();
-            SelectLine(line);
+            case Tool.Select:
+                SelectNearest(position.Value);
+                return;
+            case Tool.Note:
+                SelectNote(PlaceNote(geo.Value.Lat, geo.Value.Lon));
+                SwitchToSelect();
+                break;
+            case Tool.Mark:
+                SelectMark(PlaceMark(geo.Value.Lat, geo.Value.Lon));
+                SwitchToSelect();
+                break;
+            default:
+                SelectLine(PlaceLine(LineTypeFor(tool), geo.Value.Lat, geo.Value.Lon));
+                SwitchToSelect();
+                break;
         }
         mapView.Invalidate();
+    }
+
+    private static LineType LineTypeFor(Tool tool) => tool switch
+    {
+        Tool.Start => LineType.Start,
+        Tool.Finish => LineType.Finish,
+        _ => LineType.Sector,
+    };
+
+    /// <summary>Adds a mark at the given position (shared by tap-to-place and Drop at GPS). Its
+    /// orientation defaults to the walk direction near the point.</summary>
+    private TrackMark PlaceMark(double lat, double lon)
+    {
+        TrackMark mark = new() { Latitude = lat, Longitude = lon, Orientation = DefaultHeadingAt(lat, lon) };
+        map.Marks.Add(mark);
+        return mark;
+    }
+
+    /// <summary>Adds an empty note at the given position (shared by tap-to-place and Drop at GPS).</summary>
+    private TrackNote PlaceNote(double lat, double lon)
+    {
+        TrackNote note = new() { Latitude = lat, Longitude = lon, Text = "" };
+        map.Notes.Add(note);
+        return note;
     }
 
     /// <summary>
@@ -394,28 +430,35 @@ public sealed class TrackWalkPage : ContentPage
     }
 
     /// <summary>
-    /// Drops a Start/Sector/Finish line at the current GPS fix (while recording) or, failing that,
-    /// at the center of the current view - so you can stamp lines hands-free as you walk over each
-    /// point, and still add them after the walk (then drag to fine-tune). Mirrors
-    /// <see cref="OnMarkLocationClicked"/>.
+    /// Stamps a Start/Sector/Finish line, Mark, or Note at the live GPS fix and selects it. Only
+    /// reachable while recording (the GPS buttons are disabled otherwise), so the live position is
+    /// current; if a fix hasn't arrived yet, it alerts instead of guessing.
     /// </summary>
-    private void OnDropLineHereClicked(LineType type)
+    private async void DropAtGps(Tool kind)
     {
         // a circuit has no separate Finish line
-        if (type == LineType.Finish && map.SameStartFinish)
+        if (kind == Tool.Finish && map.SameStartFinish)
         {
             return;
         }
-        (double Lat, double Lon)? geo = drawable.CurrentPosition is { } cur
-            ? (cur.Lat, cur.Lon)
-            : drawable.PixelToGeo(new Point(mapView.Width / 2, mapView.Height / 2));
-        if (!geo.HasValue)
+        if (drawable.CurrentPosition is not { } cur)
         {
+            await DisplayAlertAsync("Drop at GPS", "Waiting for a GPS fix - try again in a moment.", "OK");
             return;
         }
-        TrackLine line = PlaceLine(type, geo.Value.Lat, geo.Value.Lon);
-        SwitchToSelect();
-        SelectLine(line);
+        double lat = cur.Lat, lon = cur.Lon;
+        switch (kind)
+        {
+            case Tool.Mark:
+                SelectMark(PlaceMark(lat, lon));
+                break;
+            case Tool.Note:
+                SelectNote(PlaceNote(lat, lon));
+                break;
+            default:
+                SelectLine(PlaceLine(LineTypeFor(kind), lat, lon));
+                break;
+        }
         mapView.Invalidate();
     }
 
@@ -465,32 +508,6 @@ public sealed class TrackWalkPage : ContentPage
         else if (bestNote != null) { SelectNote(bestNote); }
         else if (bestMark != null) { SelectMark(bestMark); }
         else { ClearSelection(); }
-    }
-
-    /// <summary>Drops a mark at the current GPS fix (while recording) or, failing that, at the
-    /// center of the current view - so a cone/apex can be flagged in both live and from-run modes -
-    /// then selects it for dragging.</summary>
-    private void OnMarkLocationClicked(object? sender, EventArgs e)
-    {
-        (double Lat, double Lon)? geo = drawable.CurrentPosition is { } cur
-            ? (cur.Lat, cur.Lon)
-            : drawable.PixelToGeo(new Point(mapView.Width / 2, mapView.Height / 2));
-        if (!geo.HasValue)
-        {
-            return;
-        }
-        TrackMark mark = new()
-        {
-            Latitude = geo.Value.Lat,
-            Longitude = geo.Value.Lon,
-            // start pointing along the walk direction here, so a triangle (pointer cone) is aimed
-            // sensibly by default; harmless for a square
-            Orientation = DefaultHeadingAt(geo.Value.Lat, geo.Value.Lon),
-        };
-        map.Marks.Add(mark);
-        SwitchToSelect();
-        SelectMark(mark);
-        mapView.Invalidate();
     }
 
     private static double Distance(PointF a, Point b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
