@@ -13,7 +13,7 @@ namespace YamuraView;
 /// </summary>
 public sealed class TrackWalkPage : ContentPage
 {
-    private enum Tool { Select, Start, Sector, Finish, Note, Mark }
+    private enum Tool { Select, Start, Sector, Finish, Note, Mark, Draw }
 
     private const double SelectPixelThreshold = 24.0;
     private const float DefaultWidth = 30f; // in the map's current units
@@ -31,8 +31,12 @@ public sealed class TrackWalkPage : ContentPage
     private TrackLine? selectedLine;
     private TrackNote? selectedNote;
     private TrackMark? selectedMark;
+    private TrackDrawnLine? selectedDrawnLine;
+    // the line being drawn while the Draw tool is active (each map tap appends a vertex)
+    private TrackDrawnLine? drawingLine;
 
-    /// <summary>Fill color for placed marks; set by the caller from settings (default orange).</summary>
+    /// <summary>Fill/stroke color for placed marks and drawn lines; set by the caller from
+    /// settings (default orange).</summary>
     public Color MarkColor
     {
         get => drawable.MarkColor;
@@ -42,6 +46,7 @@ public sealed class TrackWalkPage : ContentPage
     // drag state (Pan on the selected item)
     private bool dragging;
     private PointF dragAnchorPixel;
+    private List<(double Lat, double Lon)>? dragOriginalVertices; // drawn-line drag moves every vertex
 
     private bool updatingFields; // guards entry-change handlers while we set values programmatically
 
@@ -59,6 +64,8 @@ public sealed class TrackWalkPage : ContentPage
     private readonly Grid linePropsRow;
     private readonly Grid notePropsRow;
     private readonly Grid markPropsRow;
+    private readonly Grid drawnPropsRow;
+    private readonly Label drawnInfoLabel = new() { VerticalOptions = LayoutOptions.Center };
     private readonly Entry headingEntry = new() { Keyboard = Keyboard.Numeric, WidthRequest = 80 };
     private readonly Entry widthEntry = new() { Keyboard = Keyboard.Numeric, WidthRequest = 80 };
     private readonly Entry noteTextEntry = new() { Placeholder = "Note text", HorizontalOptions = LayoutOptions.Fill };
@@ -93,14 +100,16 @@ public sealed class TrackWalkPage : ContentPage
         {
             Text = allowRecording
                 ? "Select: pick Start / Sector / Mark / Note / Finish and tap the map to place it; with "
-                    + "none picked, tap an item to select and drag it (edit heading/width below). Tap Record "
+                    + "none picked, tap an item to select and drag it (edit heading/width below). Draw Line: "
+                    + "tap points on the map to draw a line, then Done (works while recording too). Tap Record "
                     + "to capture a GPS trail - while recording, Drop at GPS stamps the same items at your "
                     + "current position. Save writes a .ytm you can import on any device for start, finish, "
                     + "and delta timing."
                 : "The trail is the run's recorded GPS. Select: pick Start / Sector / Mark / Note / Finish "
                     + "and tap the trail to place it; with none picked, tap an item to select and drag it "
-                    + "(edit heading/width below). Save writes a .ytm you can import on any device for "
-                    + "start, finish, and delta timing.",
+                    + "(edit heading/width below). Draw Line: tap points on the map to draw a line, then "
+                    + "Done. Save writes a .ytm you can import on any device for start, finish, and delta "
+                    + "timing.",
             FontSize = 13
         };
 
@@ -150,6 +159,8 @@ public sealed class TrackWalkPage : ContentPage
         AddSelectButton(selectRow, Tool.Mark, "Mark");
         AddSelectButton(selectRow, Tool.Note, "Note");
         AddSelectButton(selectRow, Tool.Finish, "Finish");
+        // hand-drawn, never from GPS - so unlike the rest of this row it stays enabled while recording
+        AddSelectButton(selectRow, Tool.Draw, "Draw Line");
 
         // "Drop at GPS" mode: stamp the same item at the live GPS fix as you walk over each point.
         // Enabled only when recording (that's when the live position streams).
@@ -172,9 +183,11 @@ public sealed class TrackWalkPage : ContentPage
         linePropsRow = BuildLinePropsRow();
         notePropsRow = BuildNotePropsRow();
         markPropsRow = BuildMarkPropsRow();
+        drawnPropsRow = BuildDrawnPropsRow();
         linePropsRow.IsVisible = false;
         notePropsRow.IsVisible = false;
         markPropsRow.IsVisible = false;
+        drawnPropsRow.IsVisible = false;
 
         Button cancelButton = new() { Text = "Cancel" };
         cancelButton.Clicked += async (_, _) => { StopRecording(); await Navigation.PopModalAsync(); };
@@ -211,6 +224,7 @@ public sealed class TrackWalkPage : ContentPage
         layout.Add(linePropsRow, 0, 7);
         layout.Add(notePropsRow, 0, 7); // same row; only one visible at a time
         layout.Add(markPropsRow, 0, 7);
+        layout.Add(drawnPropsRow, 0, 7);
         layout.Add(buttonRow, 0, 8);
         Content = layout;
 
@@ -226,7 +240,7 @@ public sealed class TrackWalkPage : ContentPage
     private void AddSelectButton(Layout parent, Tool t, string text)
     {
         Button b = new() { Text = text, Margin = new Thickness(0, 0, 6, 6) };
-        b.Clicked += (_, _) => { tool = tool == t ? Tool.Select : t; UpdateToolButtons(); };
+        b.Clicked += (_, _) => SetTool(tool == t ? Tool.Select : t);
         selectButtons.Add((t, b));
         parent.Add(b);
     }
@@ -243,15 +257,20 @@ public sealed class TrackWalkPage : ContentPage
     /// <summary>
     /// Enables the two mode rows by state: Select buttons only when NOT recording (place/edit by
     /// tapping), GPS buttons only when recording (live fix available). Finish is also disabled in
-    /// circuit mode (start = finish). The active Select type is highlighted.
+    /// circuit mode (start = finish). Draw Line is enabled in both states (it never uses GPS) and
+    /// reads "Done" while drawing. The active Select type is highlighted.
     /// </summary>
     private void UpdateToolButtons()
     {
         foreach ((Tool t, Button b) in selectButtons)
         {
             bool typeOk = !(t == Tool.Finish && map.SameStartFinish);
-            b.IsEnabled = !recording && typeOk;
+            b.IsEnabled = (t == Tool.Draw || !recording) && typeOk;
             bool active = t == tool;
+            if (t == Tool.Draw)
+            {
+                b.Text = active ? "Done" : "Draw Line";
+            }
             b.BackgroundColor = active ? Colors.CornflowerBlue : null;
             b.TextColor = active ? Colors.White : null;
         }
@@ -260,6 +279,51 @@ public sealed class TrackWalkPage : ContentPage
             bool typeOk = !(t == Tool.Finish && map.SameStartFinish);
             b.IsEnabled = recording && typeOk;
         }
+    }
+
+    /// <summary>Switches the active tool; leaving Draw finishes the line being drawn.</summary>
+    private void SetTool(Tool newTool)
+    {
+        if (tool == Tool.Draw && newTool != Tool.Draw)
+        {
+            FinishDrawing();
+        }
+        tool = newTool;
+        UpdateToolButtons();
+        UpdateSelectionLabel();
+    }
+
+    /// <summary>Ends the in-progress drawn line: kept (and left selected) if it has at least two
+    /// points, discarded otherwise.</summary>
+    private void FinishDrawing()
+    {
+        TrackDrawnLine? dl = drawingLine;
+        drawingLine = null;
+        if (dl == null)
+        {
+            return;
+        }
+        if (dl.Points.Count < 2)
+        {
+            map.DrawnLines.Remove(dl);
+            if (ReferenceEquals(selectedDrawnLine, dl))
+            {
+                ClearSelection();
+            }
+        }
+        mapView.Invalidate();
+    }
+
+    /// <summary>Appends a vertex to the line being drawn, starting a new line on the first tap.</summary>
+    private void AddDrawVertex(double lat, double lon)
+    {
+        if (drawingLine == null)
+        {
+            drawingLine = new TrackDrawnLine();
+            map.DrawnLines.Add(drawingLine);
+        }
+        drawingLine.Points.Add(new TrackVertex { Latitude = lat, Longitude = lon });
+        SelectDrawnLine(drawingLine);
     }
 
     // ---- recording ----
@@ -294,8 +358,12 @@ public sealed class TrackWalkPage : ContentPage
             recording = true;
             recordButton.Text = "■ Stop";
             recordButton.TextColor = Colors.Red;
-            // while recording, taps select/drag (not place); GPS buttons take over placement
-            tool = Tool.Select;
+            // while recording, taps select/drag (not place); GPS buttons take over placement.
+            // Draw Line is hand-placed, so a line in progress carries on.
+            if (tool != Tool.Draw)
+            {
+                tool = Tool.Select;
+            }
             UpdateToolButtons();
         }
         catch (Exception ex)
@@ -363,6 +431,10 @@ public sealed class TrackWalkPage : ContentPage
             case Tool.Select:
                 SelectNearest(position.Value);
                 return;
+            case Tool.Draw:
+                // stays in Draw: each tap extends the line until Done
+                AddDrawVertex(geo.Value.Lat, geo.Value.Lon);
+                break;
             case Tool.Note:
                 SelectNote(PlaceNote(geo.Value.Lat, geo.Value.Lon));
                 SwitchToSelect();
@@ -504,81 +576,88 @@ public sealed class TrackWalkPage : ContentPage
                 if (d < best) { best = d; bestMark = mark; bestLine = null; bestNote = null; }
             }
         }
+        // drawn lines hit anywhere along a segment, but only if no point item was closer
+        TrackDrawnLine? bestDrawn = null;
+        if (bestLine == null && bestNote == null && bestMark == null)
+        {
+            foreach (TrackDrawnLine dl in map.DrawnLines)
+            {
+                PointF? prev = null;
+                foreach (TrackVertex v in dl.Points)
+                {
+                    PointF? px = drawable.GeoToPixel(v.Latitude, v.Longitude);
+                    if (px is not { } pt)
+                    {
+                        continue;
+                    }
+                    double d = prev is { } pp ? SegmentDistance(pp, pt, p) : Distance(pt, p);
+                    if (d < best) { best = d; bestDrawn = dl; }
+                    prev = pt;
+                }
+            }
+        }
         if (bestLine != null) { SelectLine(bestLine); }
         else if (bestNote != null) { SelectNote(bestNote); }
         else if (bestMark != null) { SelectMark(bestMark); }
+        else if (bestDrawn != null) { SelectDrawnLine(bestDrawn); }
         else { ClearSelection(); }
     }
 
     private static double Distance(PointF a, Point b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
 
+    private static double SegmentDistance(PointF a, PointF b, Point p)
+    {
+        double dx = b.X - a.X, dy = b.Y - a.Y;
+        double lenSq = dx * dx + dy * dy;
+        double t = lenSq > 0 ? Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0, 1) : 0;
+        return Distance(new PointF((float)(a.X + t * dx), (float)(a.Y + t * dy)), p);
+    }
+
     private void SelectLine(TrackLine line)
     {
-        selectedLine = line;
-        selectedNote = null;
-        selectedMark = null;
-        drawable.SelectedLine = line;
-        drawable.SelectedNote = null;
-        drawable.SelectedMark = null;
         updatingFields = true;
         headingEntry.Text = line.Heading.ToString("0.#");
         widthEntry.Text = line.Width.ToString("0.#");
         updatingFields = false;
-        linePropsRow.IsVisible = true;
-        notePropsRow.IsVisible = false;
-        markPropsRow.IsVisible = false;
-        UpdateSelectionLabel();
-        mapView.Invalidate();
+        SetSelection(line, null, null, null);
     }
 
     private void SelectNote(TrackNote note)
     {
-        selectedNote = note;
-        selectedLine = null;
-        selectedMark = null;
-        drawable.SelectedNote = note;
-        drawable.SelectedLine = null;
-        drawable.SelectedMark = null;
         updatingFields = true;
         noteTextEntry.Text = note.Text;
         updatingFields = false;
-        notePropsRow.IsVisible = true;
-        linePropsRow.IsVisible = false;
-        markPropsRow.IsVisible = false;
-        UpdateSelectionLabel();
-        mapView.Invalidate();
+        SetSelection(null, note, null, null);
     }
 
     private void SelectMark(TrackMark mark)
     {
-        selectedMark = mark;
-        selectedLine = null;
-        selectedNote = null;
-        drawable.SelectedMark = mark;
-        drawable.SelectedLine = null;
-        drawable.SelectedNote = null;
         updatingFields = true;
         markShapePicker.SelectedIndex = mark.Shape == MarkShape.Triangle ? 1 : 0;
         markOrientEntry.Text = mark.Orientation.ToString("0.#");
         updatingFields = false;
-        markPropsRow.IsVisible = true;
-        linePropsRow.IsVisible = false;
-        notePropsRow.IsVisible = false;
-        UpdateSelectionLabel();
-        mapView.Invalidate();
+        SetSelection(null, null, mark, null);
     }
 
-    private void ClearSelection()
+    private void SelectDrawnLine(TrackDrawnLine dl) => SetSelection(null, null, null, dl);
+
+    private void ClearSelection() => SetSelection(null, null, null, null);
+
+    /// <summary>Makes at most one item the selection (page + drawable) and shows its props row.</summary>
+    private void SetSelection(TrackLine? line, TrackNote? note, TrackMark? mark, TrackDrawnLine? drawn)
     {
-        selectedLine = null;
-        selectedNote = null;
-        selectedMark = null;
-        drawable.SelectedLine = null;
-        drawable.SelectedNote = null;
-        drawable.SelectedMark = null;
-        linePropsRow.IsVisible = false;
-        notePropsRow.IsVisible = false;
-        markPropsRow.IsVisible = false;
+        selectedLine = drawable.SelectedLine = line;
+        selectedNote = drawable.SelectedNote = note;
+        selectedMark = drawable.SelectedMark = mark;
+        selectedDrawnLine = drawable.SelectedDrawnLine = drawn;
+        linePropsRow.IsVisible = line != null;
+        notePropsRow.IsVisible = note != null;
+        markPropsRow.IsVisible = mark != null;
+        drawnPropsRow.IsVisible = drawn != null;
+        if (drawn != null)
+        {
+            drawnInfoLabel.Text = $"{drawn.Points.Count} point{(drawn.Points.Count == 1 ? "" : "s")}";
+        }
         UpdateSelectionLabel();
         mapView.Invalidate();
     }
@@ -591,13 +670,20 @@ public sealed class TrackWalkPage : ContentPage
                 ? "Selected: note"
                 : selectedMark != null
                     ? "Selected: mark"
-                    : $"Tool: {tool}  •  {map.Walk.Count} trail points  •  drag a selected item to move it";
+                    : selectedDrawnLine != null
+                        ? (ReferenceEquals(selectedDrawnLine, drawingLine)
+                            ? "Drawing: tap the map to add points, Done to finish"
+                            : "Selected: drawn line")
+                        : tool == Tool.Draw
+                            ? "Drawing: tap the map to add points, Done to finish"
+                            : $"Tool: {tool}  •  {map.Walk.Count} trail points  •  drag a selected item to move it";
     }
 
     private void OnPanUpdated(object? sender, PanUpdatedEventArgs e)
     {
         // only Select-tool drags move the selection; placement tools use tap
-        if (tool != Tool.Select || (selectedLine == null && selectedNote == null && selectedMark == null))
+        if (tool != Tool.Select ||
+            (selectedLine == null && selectedNote == null && selectedMark == null && selectedDrawnLine == null))
         {
             return;
         }
@@ -605,11 +691,17 @@ public sealed class TrackWalkPage : ContentPage
         {
             case GestureStatus.Started:
                 dragging = true;
+                // a drawn line drags by its first vertex; the rest follow by the same offset
+                dragOriginalVertices = selectedDrawnLine?.Points.Select(v => (v.Latitude, v.Longitude)).ToList();
                 PointF? anchor = selectedLine != null
                     ? drawable.GeoToPixel(selectedLine.Latitude, selectedLine.Longitude)
                     : selectedNote != null
                         ? drawable.GeoToPixel(selectedNote.Latitude, selectedNote.Longitude)
-                        : drawable.GeoToPixel(selectedMark!.Latitude, selectedMark.Longitude);
+                        : selectedMark != null
+                            ? drawable.GeoToPixel(selectedMark.Latitude, selectedMark.Longitude)
+                            : dragOriginalVertices is { Count: > 0 } ov
+                                ? drawable.GeoToPixel(ov[0].Lat, ov[0].Lon)
+                                : null;
                 dragAnchorPixel = anchor ?? new PointF((float)(mapView.Width / 2), (float)(mapView.Height / 2));
                 break;
             case GestureStatus.Running:
@@ -624,11 +716,22 @@ public sealed class TrackWalkPage : ContentPage
                     if (selectedLine != null) { selectedLine.Latitude = geo.Value.Lat; selectedLine.Longitude = geo.Value.Lon; }
                     else if (selectedNote != null) { selectedNote.Latitude = geo.Value.Lat; selectedNote.Longitude = geo.Value.Lon; }
                     else if (selectedMark != null) { selectedMark.Latitude = geo.Value.Lat; selectedMark.Longitude = geo.Value.Lon; }
+                    else if (selectedDrawnLine != null && dragOriginalVertices is { Count: > 0 } orig &&
+                             orig.Count == selectedDrawnLine.Points.Count)
+                    {
+                        double dLat = geo.Value.Lat - orig[0].Lat, dLon = geo.Value.Lon - orig[0].Lon;
+                        for (int i = 0; i < orig.Count; i++)
+                        {
+                            selectedDrawnLine.Points[i].Latitude = orig[i].Lat + dLat;
+                            selectedDrawnLine.Points[i].Longitude = orig[i].Lon + dLon;
+                        }
+                    }
                     mapView.Invalidate();
                 }
                 break;
             default:
                 dragging = false;
+                dragOriginalVertices = null;
                 break;
         }
     }
@@ -742,10 +845,62 @@ public sealed class TrackWalkPage : ContentPage
         return g;
     }
 
+    private Grid BuildDrawnPropsRow()
+    {
+        Button undo = new() { Text = "Undo point" };
+        undo.Clicked += (_, _) =>
+        {
+            if (selectedDrawnLine is not { } dl || dl.Points.Count == 0)
+            {
+                return;
+            }
+            dl.Points.RemoveAt(dl.Points.Count - 1);
+            // a finished line can't drop below two points; delete it instead
+            if (dl.Points.Count == 0 || (dl.Points.Count < 2 && !ReferenceEquals(dl, drawingLine)))
+            {
+                map.DrawnLines.Remove(dl);
+                if (ReferenceEquals(dl, drawingLine))
+                {
+                    drawingLine = null;
+                }
+                ClearSelection();
+                return;
+            }
+            SelectDrawnLine(dl);
+        };
+        Button delete = new() { Text = "Delete drawn line" };
+        delete.Clicked += (_, _) =>
+        {
+            if (selectedDrawnLine is not { } dl)
+            {
+                return;
+            }
+            map.DrawnLines.Remove(dl);
+            if (ReferenceEquals(dl, drawingLine))
+            {
+                drawingLine = null;
+            }
+            ClearSelection();
+        };
+        Grid g = new()
+        {
+            ColumnSpacing = 6,
+            ColumnDefinitions = { new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Star) }
+        };
+        g.Add(drawnInfoLabel, 0, 0);
+        g.Add(undo, 1, 0);
+        g.Add(delete, 2, 0);
+        return g;
+    }
+
     // ---- save ----
 
     private async void OnSaveClicked(object? sender, EventArgs e)
     {
+        if (tool == Tool.Draw)
+        {
+            SetTool(Tool.Select); // finish the line in progress
+        }
         if (map.StartLine == null)
         {
             await DisplayAlertAsync("Save Track Map", "Place a Start line before saving.", "OK");

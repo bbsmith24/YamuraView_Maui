@@ -79,6 +79,20 @@ namespace YamuraView.Core
             }
             root.Add(marks);
 
+            XElement drawn = new("DrawnLines");
+            foreach (TrackDrawnLine dl in map.DrawnLines.Where(d => d.Points.Count >= 2))
+            {
+                XElement el = new("DrawnLine");
+                foreach (TrackVertex v in dl.Points)
+                {
+                    el.Add(new XElement("V",
+                        new XAttribute("lat", Fmt(v.Latitude)),
+                        new XAttribute("lon", Fmt(v.Longitude))));
+                }
+                drawn.Add(el);
+            }
+            root.Add(drawn);
+
             new XDocument(new XDeclaration("1.0", "utf-8", "yes"), root).Save(fileName);
         }
 
@@ -164,6 +178,22 @@ namespace YamuraView.Core
                         Shape = Enum.TryParse((string?)el.Attribute("shape"), out MarkShape shape) ? shape : MarkShape.Square,
                         Orientation = TryFloat(el, "orient", out float o) ? o : 0f,
                     });
+                }
+            }
+
+            foreach (XElement el in root.Element("DrawnLines")?.Elements("DrawnLine") ?? Enumerable.Empty<XElement>())
+            {
+                TrackDrawnLine dl = new();
+                foreach (XElement v in el.Elements("V"))
+                {
+                    if (TryDouble(v, "lat", out double lat) && TryDouble(v, "lon", out double lon))
+                    {
+                        dl.Points.Add(new TrackVertex { Latitude = lat, Longitude = lon });
+                    }
+                }
+                if (dl.Points.Count >= 2)
+                {
+                    map.DrawnLines.Add(dl);
                 }
             }
 

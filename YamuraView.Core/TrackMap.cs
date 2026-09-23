@@ -100,6 +100,24 @@ namespace YamuraView.Core
         public float Orientation { get; set; }
     }
 
+    /// <summary>One vertex of a <see cref="TrackDrawnLine"/>.</summary>
+    public sealed class TrackVertex
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+
+    /// <summary>
+    /// A free-drawn polyline on the track map (e.g. a curb, a wall, the intended racing line, a
+    /// gate outline). Placed by hand on the map, not from live GPS. Like <see cref="TrackMark"/>
+    /// it is advisory only (no part in crossing detection or timing) and renders in the map's
+    /// mark color.
+    /// </summary>
+    public sealed class TrackDrawnLine
+    {
+        public List<TrackVertex> Points { get; set; } = new();
+    }
+
     /// <summary>
     /// Distance unit a track map's line widths are expressed in.
     /// </summary>
@@ -144,6 +162,9 @@ namespace YamuraView.Core
 
         /// <summary>Point-of-interest markers (cones, apexes, braking points) drawn as squares.</summary>
         public List<TrackMark> Marks { get; set; } = new();
+
+        /// <summary>Free-drawn polylines (curbs, walls, racing line), each at least two points.</summary>
+        public List<TrackDrawnLine> DrawnLines { get; set; } = new();
 
         /// <summary>The single Start line, or null if none has been placed yet.</summary>
         public TrackLine? StartLine => Lines.FirstOrDefault(l => l.Type == LineType.Start);

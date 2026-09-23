@@ -22,6 +22,7 @@ public sealed class TrackWalkDrawable : IDrawable
     public TrackLine? SelectedLine { get; set; }
     public TrackNote? SelectedNote { get; set; }
     public TrackMark? SelectedMark { get; set; }
+    public TrackDrawnLine? SelectedDrawnLine { get; set; }
     /// <summary>Fill color for point-of-interest mark squares (cones/apexes).</summary>
     public Color MarkColor { get; set; } = Colors.Orange;
 
@@ -55,6 +56,13 @@ public sealed class TrackWalkDrawable : IDrawable
         foreach (TrackMark mark in Map.Marks)
         {
             all.Add((mark.Latitude, mark.Longitude));
+        }
+        foreach (TrackDrawnLine dl in Map.DrawnLines)
+        {
+            foreach (TrackVertex v in dl.Points)
+            {
+                all.Add((v.Latitude, v.Longitude));
+            }
         }
         if (CurrentPosition.HasValue)
         {
@@ -123,6 +131,39 @@ public sealed class TrackWalkDrawable : IDrawable
             canvas.StrokeColor = Color.FromArgb("#4FC3F7");
             canvas.StrokeSize = 2;
             canvas.DrawPath(path);
+        }
+
+        // free-drawn lines, in the mark color; the selected one is haloed with its vertices dotted
+        foreach (TrackDrawnLine dl in Map.DrawnLines)
+        {
+            bool selected = ReferenceEquals(dl, SelectedDrawnLine);
+            List<PointF> pts = dl.Points.Select(v => ToPixel(v.Latitude, v.Longitude)).ToList();
+            if (pts.Count > 1)
+            {
+                PathF path = new();
+                path.MoveTo(pts[0]);
+                for (int i = 1; i < pts.Count; i++)
+                {
+                    path.LineTo(pts[i]);
+                }
+                if (selected)
+                {
+                    canvas.StrokeColor = Colors.White;
+                    canvas.StrokeSize = 6;
+                    canvas.DrawPath(path);
+                }
+                canvas.StrokeColor = MarkColor;
+                canvas.StrokeSize = selected ? 3 : 2;
+                canvas.DrawPath(path);
+            }
+            if (selected || pts.Count == 1)
+            {
+                canvas.FillColor = MarkColor;
+                foreach (PointF p in pts)
+                {
+                    canvas.FillCircle(p.X, p.Y, 3.5f);
+                }
+            }
         }
 
         // timing lines

@@ -667,6 +667,16 @@ public class XYChartDrawable : IDrawable
                 canvas.FontSize = 11;
                 canvas.DrawString(label, cx + 5, cy - 12, HorizontalAlignment.Left);
             }
+            canvas.StrokeColor = MarkColor;
+            canvas.StrokeSize = 2;
+            foreach (TrackDrawnLine dl in OverlayMap.DrawnLines)
+            {
+                for (int i = 1; i < dl.Points.Count; i++)
+                {
+                    canvas.DrawLine(scaleX((float)dl.Points[i - 1].Longitude), scaleY((float)dl.Points[i - 1].Latitude),
+                        scaleX((float)dl.Points[i].Longitude), scaleY((float)dl.Points[i].Latitude));
+                }
+            }
             foreach (TrackNote note in OverlayMap.Notes)
             {
                 float nx = scaleX((float)note.Longitude), ny = scaleY((float)note.Latitude);
