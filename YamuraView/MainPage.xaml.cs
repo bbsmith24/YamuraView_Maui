@@ -2244,8 +2244,8 @@ public partial class MainPage : ContentPage
                 {
                     trackMapGridUnit = gridUnit;
                 }
+                // field only - this runs before the drawables exist; the constructor applies it
                 trackMapMarkColor = ParseColorAttr(trackMap, "MarkColor", trackMapMarkColor);
-                trackMapDrawable.MarkColor = trackMapMarkColor;
                 LoadRunSettings(trackMap, trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth);
             }
 
