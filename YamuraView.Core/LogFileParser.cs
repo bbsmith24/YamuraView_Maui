@@ -17,6 +17,13 @@ namespace YamuraView.Core
         public float TimeAlignThreshold { get; set; } = 0.5f;
         public bool TimeAlignRisingEdge { get; set; } = true;
 
+        /// <summary>Name of the calculated combined-acceleration channel, sqrt(latG² + longG²).</summary>
+        public const string TotalGChannelName = "TotalG";
+        /// <summary>Channel read as lateral G when calculating <see cref="TotalGChannelName"/>.</summary>
+        public string LatGChannel { get; set; } = "gX";
+        /// <summary>Channel read as longitudinal G when calculating <see cref="TotalGChannelName"/>.</summary>
+        public string LongGChannel { get; set; } = "gY";
+
         // caps accumulated parse-warning text: a badly mismatched file can otherwise
         // produce a warning line per record/sentence, ballooning memory during the parse
         // and then locking up the UI thread when the text hits the warnings dialog
@@ -266,7 +273,57 @@ namespace YamuraView.Core
                     dataLogger.runData[runIdx].channels[channelName].AddPoint(timestampSeconds, value);
                 }
             }
+            AddTotalGChannel(dataLogger.runData[runIdx]);
             return errStr.ToString();
+        }
+
+        /// <summary>
+        /// (Re)calculates the <see cref="TotalGChannelName"/> channel for <paramref name="run"/> as
+        /// sqrt(latG² + longG²) from <see cref="LatGChannel"/> and <see cref="LongGChannel"/>, at
+        /// each lateral-G timestamp (longitudinal G is linearly interpolated where the two
+        /// channels' timestamps differ). Any existing TotalG is replaced - so an imported file
+        /// that already carries the column, or a change to the channel settings, recalculates it.
+        /// If either source channel is missing or empty, the run is left without TotalG.
+        /// </summary>
+        public void AddTotalGChannel(RunData run)
+        {
+            run.channels.Remove(TotalGChannelName);
+            run.channelRanges.Remove(TotalGChannelName);
+            if (!run.channels.TryGetValue(LatGChannel, out DataChannel? latChan) ||
+                !run.channels.TryGetValue(LongGChannel, out DataChannel? longChan) ||
+                latChan.dataPoints.Count == 0 || longChan.dataPoints.Count == 0)
+            {
+                return;
+            }
+            run.AddChannel(TotalGChannelName, "Total G (lateral + longitudinal)", "Calculated", run.runName, 1.0F);
+            DataChannel total = run.channels[TotalGChannelName];
+            IList<float> longTimes = longChan.dataPoints.Keys;
+            IList<float> longVals = longChan.dataPoints.Values;
+            int j = 0; // walks forward with the (sorted) lateral timestamps
+            foreach ((float t, float lat) in latChan.dataPoints)
+            {
+                while (j < longTimes.Count - 1 && longTimes[j + 1] <= t)
+                {
+                    j++;
+                }
+                float lng;
+                if (t <= longTimes[0])
+                {
+                    lng = longVals[0];
+                }
+                else if (j >= longTimes.Count - 1)
+                {
+                    lng = longVals[^1];
+                }
+                else
+                {
+                    float span = longTimes[j + 1] - longTimes[j];
+                    lng = span > 0
+                        ? longVals[j] + (longVals[j + 1] - longVals[j]) * ((t - longTimes[j]) / span)
+                        : longVals[j];
+                }
+                total.AddPoint(t, MathF.Sqrt(lat * lat + lng * lng));
+            }
         }
 
         /// <summary>
@@ -778,6 +835,7 @@ namespace YamuraView.Core
                 }
             }
 
+            AddTotalGChannel(dataLogger.runData[runIdx]);
             dataLogger.runData[runIdx].AddChannel("DeltaTime", "DeltaTime", "Calculated", dataLogger.runData[runIdx].runName, 1.0F);
 
             // automatic alignment disabled - runs are aligned through the Align Runs wizard

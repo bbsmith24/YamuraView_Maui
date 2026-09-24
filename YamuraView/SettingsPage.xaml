@@ -93,6 +93,15 @@
                 <Button Grid.Row="0" Grid.Column="1" x:Name="TrackMapMarkColorSwatch" WidthRequest="80" HeightRequest="34" BorderColor="Gray" BorderWidth="1" Clicked="OnTrackMapMarkColorClicked" />
             </Grid>
 
+            <Label Text="Total G" FontAttributes="Bold" />
+            <Label Text="Channels combined into the calculated TotalG channel, sqrt(latG² + longG²), added when a log file is read. Changing them recalculates TotalG for loaded runs." FontSize="12" />
+            <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Lateral G" VerticalOptions="Center" />
+                <Picker Grid.Row="0" Grid.Column="1" x:Name="LatGChannelPicker" WidthRequest="140" />
+                <Label Grid.Row="1" Grid.Column="0" Text="Longitudinal G" VerticalOptions="Center" />
+                <Picker Grid.Row="1" Grid.Column="1" x:Name="LongGChannelPicker" WidthRequest="140" />
+            </Grid>
+
             <Label Text="Channel Filters" FontAttributes="Bold" />
             <Label Text="Display-only smoothing per channel (e.g. vibration noise on G channels) - the logged data is unchanged. Window is in samples, centered on each point." FontSize="12" />
             <VerticalStackLayout x:Name="ChannelFilterLayout" Spacing="4" />

@@ -208,10 +208,12 @@ public class XYChartDrawable : IDrawable
             hash.Add(run.runName);
             if (run.channels.TryGetValue(XChannel, out DataChannel? xChan))
             {
+                hash.Add(xChan); // identity: a recalculated channel (e.g. TotalG) is a new object
                 hash.Add(xChan.DataPoints.Count);
             }
             if (run.channels.TryGetValue(YChannel, out DataChannel? yChan))
             {
+                hash.Add(yChan);
                 hash.Add(yChan.DataPoints.Count);
             }
         }

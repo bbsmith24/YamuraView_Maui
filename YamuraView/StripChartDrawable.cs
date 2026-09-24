@@ -217,6 +217,7 @@ public class StripChartDrawable : IDrawable
                 if (SelectedSeries.Contains((run.runName, channelName)))
                 {
                     hash.Add(channelName);
+                    hash.Add(channel); // identity: a recalculated channel (e.g. TotalG) is a new object
                     hash.Add(channel.DataPoints.Count);
                 }
             }

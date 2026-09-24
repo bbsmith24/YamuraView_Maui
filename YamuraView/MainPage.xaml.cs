@@ -1780,6 +1780,8 @@ public partial class MainPage : ContentPage
             stripChartTrackMapFinishColor,
             trackMapMarkColor,
             stripChartTrackMapLineWidth,
+            parser.LatGChannel,
+            parser.LongGChannel,
             dataLogger.runData.Select(r => r.runName).ToList(),
             dataLogger.runData.SelectMany(r => r.channels.Keys).Distinct()
                 .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList(),
@@ -1830,8 +1832,28 @@ public partial class MainPage : ContentPage
                 RefreshCharts();
             },
             RemoveRuns,
-            ExportRunsAsync);
+            ExportRunsAsync,
+            SetTotalGChannels);
         await Navigation.PushModalAsync(page);
+    }
+
+    /// <summary>
+    /// Applies the Settings page's Total G source channels; on a change, recalculates TotalG for
+    /// every loaded run. Called just before the page's onSave, whose SaveConfig persists them.
+    /// </summary>
+    private void SetTotalGChannels(string latG, string longG)
+    {
+        if (latG == parser.LatGChannel && longG == parser.LongGChannel)
+        {
+            return;
+        }
+        parser.LatGChannel = latG;
+        parser.LongGChannel = longG;
+        foreach (RunData run in dataLogger.runData)
+        {
+            parser.AddTotalGChannel(run);
+        }
+        AppLogger.Log($"Total G channels set to lateral '{latG}', longitudinal '{longG}'");
     }
 
     /// <summary>
@@ -2242,6 +2264,21 @@ public partial class MainPage : ContentPage
                 }
                 LoadRunSettings(tractionCircle, tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth);
             }
+
+            XElement? totalG = root.Element("TotalG");
+            if (totalG != null)
+            {
+                string? latG = (string?)totalG.Attribute("LatG");
+                string? longG = (string?)totalG.Attribute("LongG");
+                if (!string.IsNullOrWhiteSpace(latG))
+                {
+                    parser.LatGChannel = latG;
+                }
+                if (!string.IsNullOrWhiteSpace(longG))
+                {
+                    parser.LongGChannel = longG;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -2305,7 +2342,10 @@ public partial class MainPage : ContentPage
                         new XAttribute("YAxis", tractionCircleYAxis),
                         new XAttribute("DisplayMode", tractionCircleDisplayMode.ToString()),
                         new XAttribute("CursorTrailPoints", tractionCircleCursorTrailPoints),
-                        BuildRunSettingElements(tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth))));
+                        BuildRunSettingElements(tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth)),
+                    new XElement("TotalG",
+                        new XAttribute("LatG", parser.LatGChannel),
+                        new XAttribute("LongG", parser.LongGChannel))));
 
             string? dir = Path.GetDirectoryName(settings.ConfigFilePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))

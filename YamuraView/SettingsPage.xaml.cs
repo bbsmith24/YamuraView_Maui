@@ -8,6 +8,7 @@ public partial class SettingsPage : ContentPage
 
     private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave;
     private readonly Action<IReadOnlyList<string>> onRemoveRuns;
+    private readonly Action<string, string> onTotalGChannels;
     private readonly Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport;
     private readonly List<Button> swatchButtons = new();
     private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
@@ -38,16 +39,20 @@ public partial class SettingsPage : ContentPage
         Color trackMapFinishColor,
         Color trackMapMarkColor,
         float trackMapLineWidth,
+        string latGChannel,
+        string longGChannel,
         IReadOnlyList<string> runNames,
         IReadOnlyList<string> channelNames,
         IReadOnlyDictionary<string, ChannelFilterSettings> channelFilters,
         Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave,
         Action<IReadOnlyList<string>> onRemoveRuns,
-        Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport)
+        Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport,
+        Action<string, string> onTotalGChannels)
     {
         InitializeComponent();
         this.onSave = onSave;
         this.onRemoveRuns = onRemoveRuns;
+        this.onTotalGChannels = onTotalGChannels;
         this.onExport = onExport;
         ExportFormatPicker.SelectedIndex = 0;
         this.channelFilters = new Dictionary<string, ChannelFilterSettings>(channelFilters);
@@ -62,6 +67,19 @@ public partial class SettingsPage : ContentPage
         TrackMapMarkColorSwatch.BackgroundColor = trackMapMarkColor;
         TrackMapLineWidthEntry.Text = trackMapLineWidth.ToString(System.Globalization.CultureInfo.InvariantCulture);
         ConfigPathEntry.Text = configFilePath;
+        // Total G source choices: the loaded channels (minus Time and TotalG itself), the usual
+        // IMU names, and the current settings - so a saved choice stays selectable even when no
+        // run with that channel is loaded
+        List<string> gChoices = channelNames
+            .Where(n => n != "Time" && n != LogFileParser.TotalGChannelName)
+            .Concat(new[] { "gX", "gY", "gZ", latGChannel, longGChannel })
+            .Distinct()
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        LatGChannelPicker.ItemsSource = gChoices;
+        LongGChannelPicker.ItemsSource = gChoices;
+        LatGChannelPicker.SelectedItem = latGChannel;
+        LongGChannelPicker.SelectedItem = longGChannel;
         AutoloadFolderEntry.Text = autoloadFolderPath;
         TractionCircleTrailPointsEntry.Text = tractionCircleTrailPoints.ToString();
         TrackMapGridSpacingEntry.Text = trackMapGridSpacing.ToString();
@@ -406,6 +424,9 @@ public partial class SettingsPage : ContentPage
             onRemoveRuns(runsToRemove);
         }
 
+        onTotalGChannels(
+            LatGChannelPicker.SelectedItem as string ?? "gX",
+            LongGChannelPicker.SelectedItem as string ?? "gY");
         onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapMarkColor, trackMapLineWidth, channelFilters);
         await Navigation.PopModalAsync();
     }
