@@ -577,29 +577,11 @@ public class StripChartDrawable : IDrawable
         float ScaleYForChannel(int g, float y, bool inverted) =>
             inverted ? BandTop(g) + BandBottom(g) - ScaleYForBand(g, y) : ScaleYForBand(g, y);
 
-        List<string>[] bandChannelNames = new List<string>[graphCount];
-        for (int g = 0; g < graphCount; g++)
-        {
-            bandChannelNames[g] = new List<string>();
-        }
-
-        // LinePoint draws both; a single point still shows in any points mode, but a line
-        // needs two - so the legend's minimum-count test keys off whether points draw
         bool drawPoints = DisplayMode is ChartDisplayMode.Point or ChartDisplayMode.LinePoint;
         bool drawLine = DisplayMode is ChartDisplayMode.Line or ChartDisplayMode.LinePoint;
-        foreach ((_, string channelName, List<(float X, float Y)> points) in series)
-        {
-            if (points.Count < (drawPoints ? 1 : 2))
-            {
-                continue;
-            }
-            string displayName = IsInverted(channelName) ? channelName + " (inv)" : channelName;
-            List<string> names = bandChannelNames[GraphIndexFor(channelName)];
-            if (!names.Contains(displayName))
-            {
-                names.Add(displayName);
-            }
-        }
+        // traces that actually put something on screen in the current X window - the legend and
+        // cursor readout only list these (a trace zoomed out of view gets no text)
+        HashSet<(RunData Run, string ChannelName)> visibleSeries = new();
 
         // lines first so points sit on top of them in LinePoint mode
         if (drawLine)
@@ -672,6 +654,7 @@ public class StripChartDrawable : IDrawable
                 canvas.StrokeColor = ColorFor(run, channelName);
                 canvas.StrokeSize = PenWidthFor(channelName);
                 canvas.DrawPath(path);
+                visibleSeries.Add((run, channelName));
             }
         }
 
@@ -728,9 +711,28 @@ public class StripChartDrawable : IDrawable
                 {
                     canvas.FillCircle(px, py, penWidth);
                 }
+                visibleSeries.Add((run, channelName));
             }
         }
 
+        List<string>[] bandChannelNames = new List<string>[graphCount];
+        for (int g = 0; g < graphCount; g++)
+        {
+            bandChannelNames[g] = new List<string>();
+        }
+        foreach ((RunData run, string channelName, _) in series)
+        {
+            if (!visibleSeries.Contains((run, channelName)))
+            {
+                continue;
+            }
+            string displayName = IsInverted(channelName) ? channelName + " (inv)" : channelName;
+            List<string> names = bandChannelNames[GraphIndexFor(channelName)];
+            if (!names.Contains(displayName))
+            {
+                names.Add(displayName);
+            }
+        }
         for (int g = 0; g < graphCount; g++)
         {
             DrawLegend(canvas, plotLeft, BandTop(g), bandChannelNames[g]);
@@ -781,7 +783,14 @@ public class StripChartDrawable : IDrawable
             // pointer in the top half? move the readout to the bottom of the plot (and vice
             // versa), so the text never sits on top of the data the user is pointing at
             bool labelsAtBottom = CursorPixelY.HasValue && CursorPixelY.Value < (plotTop + plotBottom) / 2;
-            float readoutHeight = 16 + series.Count(s => s.Points.Count > 0) * 14;
+            // visible traces whose data spans the cursor - one that ends before (or starts after)
+            // the cursor has no value there, so it isn't listed rather than showing its end value
+            float cursorAt = CursorTime.Value;
+            var readoutSeries = series
+                .Where(s => s.Points.Count > 0 && visibleSeries.Contains((s.Run, s.ChannelName)) &&
+                            cursorAt >= s.Points[0].X && cursorAt <= s.Points[^1].X)
+                .ToList();
+            float readoutHeight = 16 + readoutSeries.Count * 14;
             float labelY = labelsAtBottom
                 ? Math.Max(plotTop + 2, plotBottom - readoutHeight - 2)
                 : plotTop + 2;
@@ -794,12 +803,8 @@ public class StripChartDrawable : IDrawable
             canvas.DrawString($"{XAxisChannel}: {CursorTime.Value:0.##}{axisSuffix}", labelX, labelY, labelWidth, 16, HorizontalAlignment.Left, VerticalAlignment.Top);
             labelY += 16;
 
-            foreach ((RunData run, string channelName, List<(float X, float Y)> points) in series)
+            foreach ((RunData run, string channelName, List<(float X, float Y)> points) in readoutSeries)
             {
-                if (points.Count == 0)
-                {
-                    continue;
-                }
                 float nearestY = FindNearestY(points, CursorTime.Value);
                 string displayName = IsInverted(channelName) ? channelName + " (inv)" : channelName;
                 canvas.FontColor = ColorFor(run, channelName);
