@@ -17,15 +17,26 @@ public sealed class TrackWalkPage : ContentPage
 
     private const double SelectPixelThreshold = 24.0;
     private const float DefaultWidth = 30f; // in the map's current units
+    // fixes reporting worse horizontal accuracy than this aren't recorded or used for Drop at
+    // GPS - a phone's first fixes are often a cached/network position tens to hundreds of meters
+    // off before the GPS locks (a real lock reports ~3-10 m)
+    private const double MaxAccuracyMeters = 20.0;
+    // a good fix older than this no longer counts as a live position for Drop at GPS
+    private static readonly TimeSpan FixStaleAfter = TimeSpan.FromSeconds(5);
 
     private readonly TrackMap map;
     private readonly bool allowRecording;
     private readonly TrackWalkDrawable drawable;
     private readonly GraphicsView mapView;
 
+    // location updates stream whenever the page is open (so Drop at GPS works on a second walk
+    // after recording stops); recording only decides whether good fixes join the trail
+    private bool listening;
     private bool recording;
     private DateTimeOffset? firstFixTime;
     private EventHandler<GeolocationLocationChangedEventArgs>? locationHandler;
+    private DateTime? lastGoodFixUtc;
+    private double? lastFixAccuracy;
 
     private Tool tool = Tool.Select;
     private TrackLine? selectedLine;
@@ -52,14 +63,15 @@ public sealed class TrackWalkPage : ContentPage
 
     private readonly Button recordButton = new() { Text = "● Record" };
     // two mode rows with the same five choices: "Select" places/edits by tapping the map
-    // (enabled only when NOT recording); "Drop at GPS" stamps at the live fix (enabled only
-    // when recording). Tracked so UpdateToolButtons can enable/disable each set by mode.
+    // (enabled only when NOT recording); "Drop at GPS" stamps at the live fix (enabled whenever
+    // an accurate live fix is streaming). Tracked so UpdateToolButtons can enable/disable each set.
     private readonly List<(Tool Tool, Button Button)> selectButtons = new();
     private readonly List<(Tool Tool, Button Button)> gpsButtons = new();
     private readonly Entry nameEntry = new() { Placeholder = "Track name", WidthRequest = 160 };
     private readonly Picker unitsPicker = new() { WidthRequest = 90 };
     private readonly Switch sameStartFinishSwitch = new();
     private readonly Label selectionLabel = new() { VerticalOptions = LayoutOptions.Center };
+    private readonly Label gpsStatusLabel = new() { VerticalOptions = LayoutOptions.Center, FontSize = 12, Margin = new Thickness(4, 0, 0, 6) };
 
     private readonly Grid linePropsRow;
     private readonly Grid notePropsRow;
@@ -102,19 +114,22 @@ public sealed class TrackWalkPage : ContentPage
                 ? "Select: pick Start / Sector / Mark / Note / Finish and tap the map to place it; with "
                     + "none picked, tap an item to select and drag it (edit heading/width below). Draw Line: "
                     + "tap points on the map to draw a line, then Done (works while recording too). Tap Record "
-                    + "to capture a GPS trail - while recording, Drop at GPS stamps the same items at your "
-                    + "current position. Save writes a .ytm you can import on any device for start, finish, "
-                    + "and delta timing."
+                    + "to capture a GPS trail (points are kept once GPS accuracy is within 20 m). Drop at GPS "
+                    + "stamps the same items at your current position whenever GPS is available - e.g. stop "
+                    + "recording, then walk the track again placing sectors and marks. Save writes a .ytm "
+                    + "you can import on any device for start, finish, and delta timing."
                 : "The trail is the run's recorded GPS. Select: pick Start / Sector / Mark / Note / Finish "
                     + "and tap the trail to place it; with none picked, tap an item to select and drag it "
                     + "(edit heading/width below). Draw Line: tap points on the map to draw a line, then "
-                    + "Done. Save writes a .ytm you can import on any device for start, finish, and delta "
-                    + "timing.",
+                    + "Done. Drop at GPS stamps items at your current position when GPS is available. Save "
+                    + "writes a .ytm you can import on any device for start, finish, and delta timing.",
             FontSize = 13
         };
 
         recordButton.Clicked += OnRecordClicked;
         recordButton.IsVisible = allowRecording;
+        Button cleanTrailButton = new() { Text = "Remove Inaccurate" };
+        cleanTrailButton.Clicked += OnRemoveInaccurateClicked;
 
         nameEntry.Text = map.Name;
         unitsPicker.ItemsSource = new List<string> { "Feet", "Meters" };
@@ -143,6 +158,7 @@ public sealed class TrackWalkPage : ContentPage
 
         HorizontalStackLayout recordRow = new() { Spacing = 8 };
         recordRow.Add(recordButton);
+        recordRow.Add(cleanTrailButton);
         recordRow.Add(nameEntry);
         recordRow.Add(new Label { Text = "Units", VerticalOptions = LayoutOptions.Center });
         recordRow.Add(unitsPicker);
@@ -163,7 +179,7 @@ public sealed class TrackWalkPage : ContentPage
         AddSelectButton(selectRow, Tool.Draw, "Draw Line");
 
         // "Drop at GPS" mode: stamp the same item at the live GPS fix as you walk over each point.
-        // Enabled only when recording (that's when the live position streams).
+        // Enabled whenever an accurate live fix is streaming, recording or not.
         FlexLayout dropRow = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap };
         dropRow.Add(new Label { Text = "Drop at GPS:", VerticalOptions = LayoutOptions.Center, Margin = new Thickness(0, 0, 8, 6) });
         AddGpsButton(dropRow, Tool.Start, "Start");
@@ -171,6 +187,7 @@ public sealed class TrackWalkPage : ContentPage
         AddGpsButton(dropRow, Tool.Mark, "Mark");
         AddGpsButton(dropRow, Tool.Note, "Note");
         AddGpsButton(dropRow, Tool.Finish, "Finish");
+        dropRow.Add(gpsStatusLabel);
 
         // gestures: Tap places (a placement tool) or selects (Select); Pan drags the selection
         TapGestureRecognizer tap = new();
@@ -190,7 +207,7 @@ public sealed class TrackWalkPage : ContentPage
         drawnPropsRow.IsVisible = false;
 
         Button cancelButton = new() { Text = "Cancel" };
-        cancelButton.Clicked += async (_, _) => { StopRecording(); await Navigation.PopModalAsync(); };
+        cancelButton.Clicked += async (_, _) => { StopListening(); await Navigation.PopModalAsync(); };
         Button saveButton = new() { Text = "Save .ytm" };
         saveButton.Clicked += OnSaveClicked;
         HorizontalStackLayout buttonRow = new() { Spacing = 8, HorizontalOptions = LayoutOptions.End };
@@ -231,6 +248,7 @@ public sealed class TrackWalkPage : ContentPage
         sameStartFinishSwitch.IsToggled = map.SameStartFinish;
         UpdateToolButtons();
         UpdateSelectionLabel();
+        UpdateGpsStatus();
     }
 
     // ---- tool buttons ----
@@ -256,7 +274,7 @@ public sealed class TrackWalkPage : ContentPage
 
     /// <summary>
     /// Enables the two mode rows by state: Select buttons only when NOT recording (place/edit by
-    /// tapping), GPS buttons only when recording (live fix available). Finish is also disabled in
+    /// tapping), GPS buttons whenever an accurate live fix is available. Finish is also disabled in
     /// circuit mode (start = finish). Draw Line is enabled in both states (it never uses GPS) and
     /// reads "Done" while drawing. The active Select type is highlighted.
     /// </summary>
@@ -277,7 +295,7 @@ public sealed class TrackWalkPage : ContentPage
         foreach ((Tool t, Button b) in gpsButtons)
         {
             bool typeOk = !(t == Tool.Finish && map.SameStartFinish);
-            b.IsEnabled = recording && typeOk;
+            b.IsEnabled = HasLiveFix && typeOk;
         }
     }
 
@@ -326,22 +344,38 @@ public sealed class TrackWalkPage : ContentPage
         SelectDrawnLine(drawingLine);
     }
 
-    // ---- recording ----
+    // ---- GPS / recording ----
 
-    private async void OnRecordClicked(object? sender, EventArgs e)
+    /// <summary>An accurate fix arrived recently enough to stamp items at.</summary>
+    private bool HasLiveFix =>
+        drawable.CurrentPosition.HasValue && lastGoodFixUtc.HasValue && DateTime.UtcNow - lastGoodFixUtc.Value < FixStaleAfter;
+
+    protected override async void OnAppearing()
     {
-        if (recording)
+        base.OnAppearing();
+        // quietly try for live GPS so Drop at GPS works without recording; a device without
+        // location (or a denied permission) just leaves the GPS buttons disabled
+        await StartListeningAsync(showErrors: false);
+    }
+
+    /// <summary>Starts streaming location updates (idempotent). Returns whether updates are on.</summary>
+    private async Task<bool> StartListeningAsync(bool showErrors)
+    {
+        if (listening)
         {
-            StopRecording();
-            return;
+            return true;
         }
         try
         {
             PermissionStatus status = await Permissions.RequestAsync<Permissions.LocationWhenInUse>();
             if (status != PermissionStatus.Granted)
             {
-                await DisplayAlertAsync("Track Walk", "Location permission is required to record a track walk.", "OK");
-                return;
+                UpdateGpsStatus("unavailable (no location permission)");
+                if (showErrors)
+                {
+                    await DisplayAlertAsync("Track Walk", "Location permission is required to record a track walk.", "OK");
+                }
+                return false;
             }
 
             locationHandler = OnLocationChanged;
@@ -352,26 +386,78 @@ public sealed class TrackWalkPage : ContentPage
             {
                 Geolocation.Default.LocationChanged -= locationHandler;
                 locationHandler = null;
-                await DisplayAlertAsync("Track Walk", "Couldn't start location updates on this device.", "OK");
-                return;
+                UpdateGpsStatus("unavailable");
+                if (showErrors)
+                {
+                    await DisplayAlertAsync("Track Walk", "Couldn't start location updates on this device.", "OK");
+                }
+                return false;
             }
-            recording = true;
-            recordButton.Text = "■ Stop";
-            recordButton.TextColor = Colors.Red;
-            // while recording, taps select/drag (not place); GPS buttons take over placement.
-            // Draw Line is hand-placed, so a line in progress carries on.
-            if (tool != Tool.Draw)
-            {
-                tool = Tool.Select;
-            }
-            UpdateToolButtons();
+            listening = true;
+            UpdateGpsStatus();
+            return true;
         }
         catch (Exception ex)
         {
-            await DisplayAlertAsync("Track Walk", $"Location isn't available: {ex.Message}", "OK");
+            UpdateGpsStatus("unavailable");
+            if (showErrors)
+            {
+                await DisplayAlertAsync("Track Walk", $"Location isn't available: {ex.Message}", "OK");
+            }
+            return false;
         }
     }
 
+    /// <summary>Stops recording and the location stream (page closing / saving).</summary>
+    private void StopListening()
+    {
+        StopRecording();
+        if (!listening)
+        {
+            return;
+        }
+        listening = false;
+        try
+        {
+            Geolocation.Default.StopListeningForeground();
+        }
+        catch (Exception)
+        {
+            // already stopped / not supported - nothing to undo
+        }
+        if (locationHandler != null)
+        {
+            Geolocation.Default.LocationChanged -= locationHandler;
+            locationHandler = null;
+        }
+    }
+
+    private async void OnRecordClicked(object? sender, EventArgs e)
+    {
+        if (recording)
+        {
+            StopRecording();
+            return;
+        }
+        if (!await StartListeningAsync(showErrors: true))
+        {
+            return;
+        }
+        recording = true;
+        drawable.PositionInBounds = true;
+        recordButton.Text = "■ Stop";
+        recordButton.TextColor = Colors.Red;
+        // while recording, taps select/drag (not place); GPS buttons take over placement.
+        // Draw Line is hand-placed, so a line in progress carries on.
+        if (tool != Tool.Draw)
+        {
+            tool = Tool.Select;
+        }
+        UpdateToolButtons();
+        UpdateGpsStatus();
+    }
+
+    /// <summary>Stops adding fixes to the trail; live GPS (for Drop at GPS) keeps running.</summary>
     private void StopRecording()
     {
         if (!recording)
@@ -379,16 +465,13 @@ public sealed class TrackWalkPage : ContentPage
             return;
         }
         recording = false;
-        Geolocation.Default.StopListeningForeground();
-        if (locationHandler != null)
-        {
-            Geolocation.Default.LocationChanged -= locationHandler;
-            locationHandler = null;
-        }
+        drawable.PositionInBounds = false;
         recordButton.Text = "● Record";
         recordButton.TextColor = null;
-        // back to not-recording: Select buttons re-enable, GPS buttons disable
+        // back to not-recording: Select buttons re-enable
         UpdateToolButtons();
+        UpdateGpsStatus();
+        mapView.Invalidate();
     }
 
     private void OnLocationChanged(object? sender, GeolocationLocationChangedEventArgs e)
@@ -396,20 +479,91 @@ public sealed class TrackWalkPage : ContentPage
         Location loc = e.Location;
         MainThread.BeginInvokeOnMainThread(() =>
         {
-            firstFixTime ??= loc.Timestamp;
-            map.Walk.Add(new TrackPoint
+            if (!listening)
             {
-                Latitude = loc.Latitude,
-                Longitude = loc.Longitude,
-                TimeSeconds = (float)(loc.Timestamp - firstFixTime.Value).TotalSeconds,
-                Speed = loc.Speed.HasValue ? (float)loc.Speed.Value : null,
-                Course = loc.Course.HasValue ? (float)loc.Course.Value : null,
-                AccuracyMeters = loc.Accuracy.HasValue ? (float)loc.Accuracy.Value : null,
-                Altitude = loc.Altitude.HasValue ? (float)loc.Altitude.Value : null,
-            });
-            drawable.CurrentPosition = (loc.Latitude, loc.Longitude);
+                return; // a late update after StopListening
+            }
+            lastFixAccuracy = loc.Accuracy;
+            // a fix with no reported accuracy is trusted (nothing to judge it by)
+            bool accurate = !loc.Accuracy.HasValue || loc.Accuracy.Value <= MaxAccuracyMeters;
+            if (accurate)
+            {
+                lastGoodFixUtc = DateTime.UtcNow;
+                drawable.CurrentPosition = (loc.Latitude, loc.Longitude);
+                if (recording)
+                {
+                    firstFixTime ??= loc.Timestamp;
+                    map.Walk.Add(new TrackPoint
+                    {
+                        Latitude = loc.Latitude,
+                        Longitude = loc.Longitude,
+                        TimeSeconds = (float)(loc.Timestamp - firstFixTime.Value).TotalSeconds,
+                        Speed = loc.Speed.HasValue ? (float)loc.Speed.Value : null,
+                        Course = loc.Course.HasValue ? (float)loc.Course.Value : null,
+                        AccuracyMeters = loc.Accuracy.HasValue ? (float)loc.Accuracy.Value : null,
+                        Altitude = loc.Altitude.HasValue ? (float)loc.Altitude.Value : null,
+                    });
+                }
+            }
+            UpdateToolButtons();
+            UpdateGpsStatus();
+            UpdateSelectionLabel(); // refreshes the trail point count when nothing is selected
             mapView.Invalidate();
         });
+    }
+
+    private void UpdateGpsStatus(string? overrideText = null)
+    {
+        string text;
+        if (overrideText != null)
+        {
+            text = overrideText;
+        }
+        else if (!listening)
+        {
+            text = "starting...";
+        }
+        else if (HasLiveFix)
+        {
+            text = lastFixAccuracy.HasValue ? $"±{lastFixAccuracy.Value:0} m" : "fix";
+        }
+        else if (lastFixAccuracy.HasValue)
+        {
+            text = $"waiting for accuracy (±{lastFixAccuracy.Value:0} m, need ≤{MaxAccuracyMeters:0} m)";
+        }
+        else
+        {
+            text = "waiting for fix";
+        }
+        gpsStatusLabel.Text = $"GPS: {text}{(recording ? "  •  recording" : "")}";
+    }
+
+    /// <summary>
+    /// Removes trail points whose recorded accuracy is worse than the recording threshold - the
+    /// cached/network fixes a phone reports before GPS locks, which draw a spike at the start of
+    /// the trail. Points without a recorded accuracy (e.g. a trail built from a run) are kept.
+    /// Also cleans maps recorded before the accuracy gate existed.
+    /// </summary>
+    private async void OnRemoveInaccurateClicked(object? sender, EventArgs e)
+    {
+        static bool Inaccurate(TrackPoint p) => p.AccuracyMeters.HasValue && p.AccuracyMeters.Value > MaxAccuracyMeters;
+        int bad = map.Walk.Count(Inaccurate);
+        if (bad == 0)
+        {
+            await DisplayAlertAsync("Remove Inaccurate Points",
+                $"No trail points have accuracy worse than {MaxAccuracyMeters:0} m.", "OK");
+            return;
+        }
+        bool confirmed = await DisplayAlertAsync("Remove Inaccurate Points",
+            $"Remove {bad} of {map.Walk.Count} trail points with accuracy worse than {MaxAccuracyMeters:0} m?",
+            "Remove", "Cancel");
+        if (!confirmed)
+        {
+            return;
+        }
+        map.Walk.RemoveAll(Inaccurate);
+        UpdateSelectionLabel();
+        mapView.Invalidate();
     }
 
     // ---- placement / selection ----
@@ -502,9 +656,9 @@ public sealed class TrackWalkPage : ContentPage
     }
 
     /// <summary>
-    /// Stamps a Start/Sector/Finish line, Mark, or Note at the live GPS fix and selects it. Only
-    /// reachable while recording (the GPS buttons are disabled otherwise), so the live position is
-    /// current; if a fix hasn't arrived yet, it alerts instead of guessing.
+    /// Stamps a Start/Sector/Finish line, Mark, or Note at the live GPS fix and selects it -
+    /// recording or not. The buttons are only enabled with an accurate, recent fix; if that lapsed
+    /// between enabling and the click, it alerts instead of guessing.
     /// </summary>
     private async void DropAtGps(Tool kind)
     {
@@ -513,9 +667,9 @@ public sealed class TrackWalkPage : ContentPage
         {
             return;
         }
-        if (drawable.CurrentPosition is not { } cur)
+        if (!HasLiveFix || drawable.CurrentPosition is not { } cur)
         {
-            await DisplayAlertAsync("Drop at GPS", "Waiting for a GPS fix - try again in a moment.", "OK");
+            await DisplayAlertAsync("Drop at GPS", "Waiting for an accurate GPS fix - try again in a moment.", "OK");
             return;
         }
         double lat = cur.Lat, lon = cur.Lon;
@@ -913,7 +1067,7 @@ public sealed class TrackWalkPage : ContentPage
             return;
         }
 
-        StopRecording();
+        StopListening();
         map.Name = string.IsNullOrWhiteSpace(nameEntry.Text) ? "Track Map" : nameEntry.Text.Trim();
         map.Created = DateTime.UtcNow;
         try
@@ -964,6 +1118,6 @@ public sealed class TrackWalkPage : ContentPage
     protected override void OnDisappearing()
     {
         base.OnDisappearing();
-        StopRecording();
+        StopListening();
     }
 }

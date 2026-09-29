@@ -18,6 +18,10 @@ public sealed class TrackWalkDrawable : IDrawable
     public TrackMap Map { get; set; } = new();
     /// <summary>The live GPS fix, drawn as a marker; null when not recording / no fix yet.</summary>
     public (double Lat, double Lon)? CurrentPosition { get; set; }
+    /// <summary>Whether the live position is fitted into view. True while recording (the trail
+    /// grows around it); false otherwise, so a fix far from the map (editing it away from the
+    /// track) doesn't shrink the map to a dot - the marker simply draws if it's in view.</summary>
+    public bool PositionInBounds { get; set; }
     /// <summary>The currently selected line/note/mark, drawn highlighted.</summary>
     public TrackLine? SelectedLine { get; set; }
     public TrackNote? SelectedNote { get; set; }
@@ -64,7 +68,8 @@ public sealed class TrackWalkDrawable : IDrawable
                 all.Add((v.Latitude, v.Longitude));
             }
         }
-        if (CurrentPosition.HasValue)
+        // an empty map (nothing recorded/placed yet) still centers on the live position
+        if (CurrentPosition.HasValue && (PositionInBounds || all.Count == 0))
         {
             all.Add(CurrentPosition.Value);
         }
