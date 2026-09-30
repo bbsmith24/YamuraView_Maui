@@ -129,4 +129,46 @@
 		<Message Importance="high" Text="Release build: bumped build number to $(VersionMajor).$(VersionMinor).$(NextVersionBuildNumber)" />
 	</Target>
 
+	<!-- Embeds the commit subjects since the last release (the most recent "Bump build number
+	     to N" commit) as the ReleaseNotes.txt resource, shown in the About dialog. Generated at
+	     build time because the devices the app runs on have no git. No git / not a repo just
+	     yields empty notes; the output file is only rewritten when the text changes, so an
+	     unchanged history doesn't force a recompile. -->
+	<Target Name="GenerateReleaseNotes" BeforeTargets="BeforeBuild">
+		<PropertyGroup>
+			<ReleaseNotesRaw>$(IntermediateOutputPath)ReleaseNotes.raw.txt</ReleaseNotesRaw>
+			<ReleaseNotesFile>$(IntermediateOutputPath)ReleaseNotes.txt</ReleaseNotesFile>
+			<LastReleaseCommit></LastReleaseCommit>
+			<!-- Exec runs a .cmd on Windows (a literal % must be doubled) and sh elsewhere -->
+			<GitPct Condition="'$(OS)' == 'Windows_NT'">%25%25</GitPct>
+			<GitPct Condition="'$(OS)' != 'Windows_NT'">%25</GitPct>
+		</PropertyGroup>
+		<MakeDir Directories="$(IntermediateOutputPath)" />
+		<Exec Command="git log -1 --format=$(GitPct)H --grep=&quot;^Bump build number&quot;"
+		      WorkingDirectory="$(MSBuildProjectDirectory)"
+		      ConsoleToMSBuild="true" EchoOff="true" IgnoreExitCode="true" ContinueOnError="true"
+		      StandardOutputImportance="low" StandardErrorImportance="low">
+			<Output TaskParameter="ConsoleOutput" PropertyName="LastReleaseCommit" />
+		</Exec>
+		<PropertyGroup>
+			<LastReleaseCommit>$(LastReleaseCommit.Trim())</LastReleaseCommit>
+			<!-- no release marker yet: fall back to the most recent commits -->
+			<ReleaseNotesRange Condition="'$(LastReleaseCommit)' != ''">$(LastReleaseCommit)..HEAD</ReleaseNotesRange>
+			<ReleaseNotesRange Condition="'$(LastReleaseCommit)' == ''">-30 HEAD</ReleaseNotesRange>
+		</PropertyGroup>
+		<Delete Files="$(ReleaseNotesRaw)" ContinueOnError="true" />
+		<Exec Command="git log --no-merges --format=$(GitPct)s $(ReleaseNotesRange) &gt; &quot;$(ReleaseNotesRaw)&quot;"
+		      WorkingDirectory="$(MSBuildProjectDirectory)"
+		      EchoOff="true" IgnoreExitCode="true" ContinueOnError="true"
+		      StandardOutputImportance="low" StandardErrorImportance="low" />
+		<ReadLinesFromFile File="$(ReleaseNotesRaw)" Condition="Exists('$(ReleaseNotesRaw)')">
+			<Output TaskParameter="Lines" ItemName="ReleaseNoteLine" />
+		</ReadLinesFromFile>
+		<WriteLinesToFile File="$(ReleaseNotesFile)" Lines="@(ReleaseNoteLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+		<ItemGroup>
+			<EmbeddedResource Include="$(ReleaseNotesFile)" LogicalName="ReleaseNotes.txt" />
+			<FileWrites Include="$(ReleaseNotesRaw);$(ReleaseNotesFile)" />
+		</ItemGroup>
+	</Target>
+
 </Project>

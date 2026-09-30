@@ -1902,10 +1902,7 @@ public partial class MainPage : ContentPage
 
     private async void OnAboutClicked(object? sender, EventArgs e)
     {
-        await DisplayAlertAsync(
-            "About YamuraView",
-            $"YamuraView\nVersion {AppVersion.Number} ({AppVersion.Status})",
-            "OK");
+        await Navigation.PushModalAsync(new AboutPage());
     }
 
     /// <summary>
