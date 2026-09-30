@@ -34,7 +34,9 @@ namespace YamuraView.Core
         /// run's trace is then rebased so it reads exactly zero at the defined start point -
         /// the alignment itself is only as exact as the GPS sample spacing, and that residue
         /// would otherwise show up as a constant offset instead of the trace starting at 0.
-        /// Returns a warning listing runs that were skipped (no distance data), or null if
+        /// With an active track map that has start and finish lines, each run (base included)
+        /// only contributes points between its start and finish crossings (see
+        /// <see cref="TimingWindow"/>); otherwise all of its data is used. Returns a warning listing runs that were skipped (no distance data), or null if
         /// every run got the channel.
         /// </summary>
         public static string? Compute(DataLogger dataLogger, string baseRunName)
@@ -52,6 +54,11 @@ namespace YamuraView.Core
             float alignPoint = dataLogger.DistanceAlignPoint;
             bool hasAlignPoint = !float.IsNaN(alignPoint);
 
+            // with an active track map, each run is further limited to its own timed window
+            // (start line to finish line) - see TimingWindow
+            TrackMap? map = dataLogger.AlignmentTrackMap;
+            (float Start, float End)? baseWindow = TimingWindow(baseRun, map);
+
             // base curve: aligned distance -> aligned time, filtered to strictly increasing
             // distance so plateaus (car stationary) and GPS jitter don't break interpolation
             List<(float Dist, float Time)> baseCurve = new();
@@ -60,6 +67,10 @@ namespace YamuraView.Core
             {
                 float dist = point.Value + baseRun.DistanceOffset;
                 if (hasAlignPoint && dist < alignPoint)
+                {
+                    continue;
+                }
+                if (baseWindow is { } bw && (point.Key < bw.Start || point.Key > bw.End))
                 {
                     continue;
                 }
@@ -93,12 +104,17 @@ namespace YamuraView.Core
                 // point so every run's trace starts at exactly 0 there and reads "time
                 // gained/lost since the start position"
                 List<(float Time, float Delta)> deltas = new();
+                (float Start, float End)? window = TimingWindow(run, map);
                 foreach (KeyValuePair<float, float> point in distance.DataPoints)
                 {
                     float alignedDist = point.Value + run.DistanceOffset;
                     if (hasAlignPoint && alignedDist < alignPoint)
                     {
                         continue; // before the align point - runs aren't comparable yet
+                    }
+                    if (window is { } w && (point.Key < w.Start || point.Key > w.End))
+                    {
+                        continue; // outside this run's start-to-finish window
                     }
                     float? baseTime = InterpolateTime(baseCurve, alignedDist);
                     if (!baseTime.HasValue)
@@ -118,6 +134,32 @@ namespace YamuraView.Core
             return skipped.Count > 0
                 ? "No distance data, Delta-T skipped for: " + string.Join(", ", skipped)
                 : null;
+        }
+
+        /// <summary>
+        /// The run's raw-time window between the track map's start and finish, or null to use all
+        /// of the run's data (no map, or the run doesn't cross both ends). Point-to-point map:
+        /// first Start crossing to the first Finish crossing after it. Circuit map (the start line
+        /// is also the finish): first Start crossing to the last, so only complete laps count.
+        /// </summary>
+        static (float Start, float End)? TimingWindow(RunData run, TrackMap? map)
+        {
+            if (map?.StartLine == null || (!map.SameStartFinish && map.FinishLine == null))
+            {
+                return null;
+            }
+            RunTiming timing = TrackMapGeometry.BuildTiming(run, map);
+            if (timing.Laps.Count == 0)
+            {
+                return null; // never crossed the start line
+            }
+            float start = timing.Laps[0].StartTime;
+            // point-to-point: the single lap's finish; circuit: the last start crossing (the end
+            // of the last complete lap - the final lap is always left open)
+            float? end = map.SameStartFinish
+                ? (timing.Laps.Count > 1 ? timing.Laps[^1].StartTime : null)
+                : timing.Laps[0].EndTime;
+            return end.HasValue ? (start, end.Value) : null;
         }
 
         /// <summary>Linear interpolation of the base run's aligned time at a given aligned
