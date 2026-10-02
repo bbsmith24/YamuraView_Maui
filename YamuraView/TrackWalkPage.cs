@@ -54,6 +54,13 @@ public sealed class TrackWalkPage : ContentPage
         set => drawable.MarkColor = value;
     }
 
+    /// <summary>Mark size in pixels; set by the caller from settings.</summary>
+    public float MarkSize
+    {
+        get => drawable.MarkSize;
+        set => drawable.MarkSize = value;
+    }
+
     // drag state (Pan on the selected item)
     private bool dragging;
     private PointF dragAnchorPixel;

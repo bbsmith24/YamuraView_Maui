@@ -6,7 +6,7 @@ public partial class SettingsPage : ContentPage
 {
     private const int DefaultFilterWindow = 9;
 
-    private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave;
+    private readonly Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, (Color Color, float Size), float, Dictionary<string, ChannelFilterSettings>> onSave;
     private readonly Action<IReadOnlyList<string>> onRemoveRuns;
     private readonly Action<string, string> onTotalGChannels;
     private readonly Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport;
@@ -16,6 +16,7 @@ public partial class SettingsPage : ContentPage
     private readonly int initialTractionCircleTrailPoints;
     private readonly float initialTrackMapGridSpacing;
     private readonly float initialTrackMapLineWidth;
+    private readonly float initialTrackMapMarkSize;
     private readonly string initialAutoloadFolderPath;
 
     // one row per loaded channel name; channels with a filter but no loaded data keep
@@ -38,13 +39,14 @@ public partial class SettingsPage : ContentPage
         Color trackMapSectorColor,
         Color trackMapFinishColor,
         Color trackMapMarkColor,
+        float trackMapMarkSize,
         float trackMapLineWidth,
         string latGChannel,
         string longGChannel,
         IReadOnlyList<string> runNames,
         IReadOnlyList<string> channelNames,
         IReadOnlyDictionary<string, ChannelFilterSettings> channelFilters,
-        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, Color, float, Dictionary<string, ChannelFilterSettings>> onSave,
+        Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, (Color Color, float Size), float, Dictionary<string, ChannelFilterSettings>> onSave,
         Action<IReadOnlyList<string>> onRemoveRuns,
         Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport,
         Action<string, string> onTotalGChannels)
@@ -59,6 +61,7 @@ public partial class SettingsPage : ContentPage
         initialTractionCircleTrailPoints = tractionCircleTrailPoints;
         initialTrackMapGridSpacing = trackMapGridSpacing;
         initialTrackMapLineWidth = trackMapLineWidth;
+        initialTrackMapMarkSize = trackMapMarkSize;
         initialAutoloadFolderPath = autoloadFolderPath;
         TrackMapLinesSwitch.IsToggled = showTrackMapLines;
         TrackMapStartColorSwatch.BackgroundColor = trackMapStartColor;
@@ -66,6 +69,7 @@ public partial class SettingsPage : ContentPage
         TrackMapFinishColorSwatch.BackgroundColor = trackMapFinishColor;
         TrackMapMarkColorSwatch.BackgroundColor = trackMapMarkColor;
         TrackMapLineWidthEntry.Text = trackMapLineWidth.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        TrackMapMarkSizeEntry.Text = trackMapMarkSize.ToString(System.Globalization.CultureInfo.InvariantCulture);
         ConfigPathEntry.Text = configFilePath;
         // Total G source choices: the loaded channels (minus Time and TotalG itself), the usual
         // IMU names, and the current settings - so a saved choice stays selectable even when no
@@ -387,6 +391,10 @@ public partial class SettingsPage : ContentPage
         float trackMapLineWidth = float.TryParse(TrackMapLineWidthEntry.Text?.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float lineWidth) && lineWidth > 0
             ? lineWidth
             : initialTrackMapLineWidth;
+        // must be positive; unparseable or non-positive keeps the previous value
+        float trackMapMarkSize = float.TryParse(TrackMapMarkSizeEntry.Text?.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float markSize) && markSize > 0
+            ? markSize
+            : initialTrackMapMarkSize;
 
         // merge the filter rows into the map - channels without a row (a saved filter whose
         // channel isn't currently loaded) keep their existing entry
@@ -427,7 +435,7 @@ public partial class SettingsPage : ContentPage
         onTotalGChannels(
             LatGChannelPicker.SelectedItem as string ?? "gX",
             LongGChannelPicker.SelectedItem as string ?? "gY");
-        onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapMarkColor, trackMapLineWidth, channelFilters);
+        onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, (trackMapMarkColor, trackMapMarkSize), trackMapLineWidth, channelFilters);
         await Navigation.PopModalAsync();
     }
 }

@@ -84,6 +84,10 @@ public partial class MainPage : ContentPage
     /// and drawn as squares; user-selectable in Settings.</summary>
     private Color trackMapMarkColor = Colors.Orange;
 
+    /// <summary>Size in pixels of track-map marks, on the analysis overlay and in the track-walk
+    /// editor; user-selectable in Settings.</summary>
+    private float trackMapMarkSize = TrackMarkRenderer.DefaultMarkSize;
+
     /// <summary>Show the active track map's start/finish/sector crossings as vertical lines on
     /// the Strip Chart, with their color and thickness. User-set on the Settings page, persisted
     /// in the config.</summary>
@@ -163,7 +167,8 @@ public partial class MainPage : ContentPage
             InvertedRuns = trackMapInvertedRuns,
             RunPenWidth = trackMapRunPenWidth,
             ChannelFilters = channelFilters,
-            MarkColor = trackMapMarkColor
+            MarkColor = trackMapMarkColor,
+            MarkSize = trackMapMarkSize
         };
         tractionCircleDrawable = new XYChartDrawable
         {
@@ -1779,6 +1784,7 @@ public partial class MainPage : ContentPage
             stripChartTrackMapSectorColor,
             stripChartTrackMapFinishColor,
             trackMapMarkColor,
+            trackMapMarkSize,
             stripChartTrackMapLineWidth,
             parser.LatGChannel,
             parser.LongGChannel,
@@ -1786,7 +1792,7 @@ public partial class MainPage : ContentPage
             dataLogger.runData.SelectMany(r => r.channels.Keys).Distinct()
                 .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList(),
             channelFilters,
-            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay, tractionCircleTrailPoints, gridSpacing, gridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapMarkColorValue, trackMapLineWidth, updatedFilters) =>
+            (path, autoloadFolder, colors, stripDisplay, trackMapDisplay, tractionCircleDisplay, tractionCircleTrailPoints, gridSpacing, gridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, trackMapMark, trackMapLineWidth, updatedFilters) =>
             {
                 bool autoloadFolderChanged = autoloadFolder != settings.AutoloadFolderPath;
                 settings.ConfigFilePath = path;
@@ -1800,8 +1806,10 @@ public partial class MainPage : ContentPage
                 trackMapGridUnit = gridUnit;
                 trackMapDrawable.GridSpacing = trackMapGridSpacing;
                 trackMapDrawable.GridSpacingUnit = trackMapGridUnit;
-                trackMapMarkColor = trackMapMarkColorValue;
+                trackMapMarkColor = trackMapMark.Color;
                 trackMapDrawable.MarkColor = trackMapMarkColor;
+                trackMapMarkSize = trackMapMark.Size;
+                trackMapDrawable.MarkSize = trackMapMarkSize;
                 stripChartShowTrackMapLines = showTrackMapLines;
                 stripChartTrackMapStartColor = trackMapStartColor;
                 stripChartTrackMapSectorColor = trackMapSectorColor;
@@ -1974,14 +1982,14 @@ public partial class MainPage : ContentPage
         }
 
         AppLogger.Log($"Editing track map '{map.Name}' from {path} ({map.Lines.Count} lines, {map.Notes.Count} notes, {map.Marks.Count} marks)");
-        await Navigation.PushModalAsync(new TrackWalkPage(map, allowRecording: true) { MarkColor = trackMapMarkColor });
+        await Navigation.PushModalAsync(new TrackWalkPage(map, allowRecording: true) { MarkColor = trackMapMarkColor, MarkSize = trackMapMarkSize });
     }
 
     /// <summary>Opens the track-walk capture page (records GPS into a .ytm track map). Only
     /// useful on a device with a GPS receiver; the saved map is imported for analysis anywhere.</summary>
     private async void OnTrackWalkClicked(object? sender, EventArgs e)
     {
-        await Navigation.PushModalAsync(new TrackWalkPage { MarkColor = trackMapMarkColor });
+        await Navigation.PushModalAsync(new TrackWalkPage { MarkColor = trackMapMarkColor, MarkSize = trackMapMarkSize });
     }
 
     /// <summary>
@@ -2017,7 +2025,7 @@ public partial class MainPage : ContentPage
         }
 
         TrackMap seed = TrackMapBuilder.FromRun(run);
-        await Navigation.PushModalAsync(new TrackWalkPage(seed, allowRecording: false) { MarkColor = trackMapMarkColor });
+        await Navigation.PushModalAsync(new TrackWalkPage(seed, allowRecording: false) { MarkColor = trackMapMarkColor, MarkSize = trackMapMarkSize });
     }
 
     /// <summary>
@@ -2243,6 +2251,10 @@ public partial class MainPage : ContentPage
                 }
                 // field only - this runs before the drawables exist; the constructor applies it
                 trackMapMarkColor = ParseColorAttr(trackMap, "MarkColor", trackMapMarkColor);
+                if (float.TryParse((string?)trackMap.Attribute("MarkSize"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float markSize) && markSize > 0)
+                {
+                    trackMapMarkSize = markSize;
+                }
                 LoadRunSettings(trackMap, trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth);
             }
 
@@ -2333,6 +2345,7 @@ public partial class MainPage : ContentPage
                         new XAttribute("GridSpacing", trackMapGridSpacing),
                         new XAttribute("GridUnit", trackMapGridUnit.ToString()),
                         new XAttribute("MarkColor", trackMapMarkColor.ToHex()),
+                        new XAttribute("MarkSize", trackMapMarkSize),
                         BuildRunSettingElements(trackMapRunColor, trackMapInvertedRuns, trackMapRunPenWidth)),
                     new XElement("TractionCircle",
                         new XAttribute("XAxis", tractionCircleXAxis),

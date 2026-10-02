@@ -60,6 +60,8 @@ public class XYChartDrawable : IDrawable
     public TrackMap? OverlayMap { get; set; }
     /// <summary>Fill color for overlay mark squares (cones/apexes); default orange.</summary>
     public Color MarkColor { get; set; } = Colors.Orange;
+    /// <summary>Overlay mark size in pixels (a square's side).</summary>
+    public float MarkSize { get; set; } = TrackMarkRenderer.DefaultMarkSize;
 
     private const float FeetToMeters = 0.3048f;
     private const float MetersPerDegreeLatitude = 111320f;
@@ -688,7 +690,7 @@ public class XYChartDrawable : IDrawable
             foreach (TrackMark mark in OverlayMap.Marks)
             {
                 float mx = scaleX((float)mark.Longitude), my = scaleY((float)mark.Latitude);
-                TrackMarkRenderer.Draw(canvas, mx, my, 4f, mark.Orientation, mark.Shape, MarkColor, Colors.Black);
+                TrackMarkRenderer.Draw(canvas, mx, my, MarkSize / 2f, mark.Orientation, mark.Shape, MarkColor, Colors.Black);
             }
             canvas.RestoreState();
         }

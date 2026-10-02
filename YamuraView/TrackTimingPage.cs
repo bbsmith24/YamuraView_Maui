@@ -112,11 +112,14 @@ public sealed class TrackTimingPage : ContentPage
                         continue; // a segment for a sector not in the map's list (shouldn't happen)
                     }
                     bool segmentIsFastest = fastestSegment.TryGetValue(segment.Key, out float best) && NearlyEqual(segment.SegmentTime, best);
-                    grid.Add(Cell(FormatTime(segment.SegmentTime), numeric: true, highlight: segmentIsFastest), col, row);
+                    grid.Add(Cell(FormatTimeWithDelta(segment.SegmentTime, best), numeric: true, highlight: segmentIsFastest), col, row);
                 }
 
                 bool lapIsFastest = lap.LapTime.HasValue && fastestLap.HasValue && NearlyEqual(lap.LapTime.Value, fastestLap.Value);
-                grid.Add(Cell(lap.LapTime.HasValue ? FormatTime(lap.LapTime.Value) : "—", numeric: true, highlight: lapIsFastest), lapCol, row);
+                string lapText = lap.LapTime.HasValue
+                    ? (fastestLap.HasValue ? FormatTimeWithDelta(lap.LapTime.Value, fastestLap.Value) : FormatTime(lap.LapTime.Value))
+                    : "—";
+                grid.Add(Cell(lapText, numeric: true, highlight: lapIsFastest), lapCol, row);
                 row++;
             }
         }
@@ -130,7 +133,7 @@ public sealed class TrackTimingPage : ContentPage
         });
         head.Add(new Label
         {
-            Text = "Fastest lap and fastest sector times (across all runs) are highlighted. Columns are the segments between timing lines (S1 = Start→S1, … , Finish = last sector→Finish).",
+            Text = "Fastest lap and fastest sector times (across all runs) are highlighted; the number in parentheses is the gap to that fastest time (negative = slower). Columns are the segments between timing lines (S1 = Start→S1, … , Finish = last sector→Finish).",
             FontSize = 12
         });
 
@@ -205,6 +208,14 @@ public sealed class TrackTimingPage : ContentPage
     }
 
     private static bool NearlyEqual(float a, float b) => Math.Abs(a - b) < TimeEpsilon;
+
+    /// <summary>The time followed by its delta to the fastest, in parentheses: fastest − time, so a
+    /// slower time shows negative and the fastest itself shows 0.000.</summary>
+    private static string FormatTimeWithDelta(float seconds, float fastest)
+    {
+        float delta = NearlyEqual(seconds, fastest) ? 0f : fastest - seconds;
+        return $"{FormatTime(seconds)} ({delta:0.000})";
+    }
 
     private static string FormatTime(float seconds)
     {

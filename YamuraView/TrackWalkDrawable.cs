@@ -29,6 +29,8 @@ public sealed class TrackWalkDrawable : IDrawable
     public TrackDrawnLine? SelectedDrawnLine { get; set; }
     /// <summary>Fill color for point-of-interest mark squares (cones/apexes).</summary>
     public Color MarkColor { get; set; } = Colors.Orange;
+    /// <summary>Mark size in pixels (a square's side); the selected mark draws a little larger.</summary>
+    public float MarkSize { get; set; } = TrackMarkRenderer.DefaultMarkSize;
 
     // cached transform from the last Draw, for pixel<->geo conversion
     private bool hasTransform;
@@ -220,7 +222,7 @@ public sealed class TrackWalkDrawable : IDrawable
         {
             PointF p = ToPixel(mark.Latitude, mark.Longitude);
             bool selected = ReferenceEquals(mark, SelectedMark);
-            float half = selected ? 7f : 5f;
+            float half = MarkSize / 2f * (selected ? 1.4f : 1f);
             TrackMarkRenderer.Draw(canvas, p.X, p.Y, half, mark.Orientation, mark.Shape,
                 selected ? Colors.White : MarkColor, Colors.Black);
         }
