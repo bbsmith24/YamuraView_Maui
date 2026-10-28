@@ -219,7 +219,10 @@ namespace YamuraView.Core
                         double qx = ax - px0, qy = ay - py0; // A - P0
                         double t = (qx * sy - qy * sx) / denom; // fraction along the run segment
                         double u = (qx * ry - qy * rx) / denom; // fraction along the line segment
-                        if (t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0)
+                        // half-open [0, 1): a fix exactly on the line belongs to the segment that
+                        // starts at it, so it isn't counted twice; the run's last segment keeps t = 1
+                        bool lastSegment = i == track.Count - 1;
+                        if (t >= 0.0 && (t < 1.0 || (lastSegment && t <= 1.0)) && u >= 0.0 && u <= 1.0)
                         {
                             float t0 = track[i - 1].Time, t1 = track[i].Time;
                             float crossTime = (float)(t0 + t * (t1 - t0));
