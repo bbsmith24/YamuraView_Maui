@@ -513,6 +513,16 @@ namespace YamuraView.Core
             return errStr.ToString();
         }
 
+        /// <summary>Adds a point to an IMU channel, creating the channel on first use.</summary>
+        private static void AddIMUPoint(RunData run, string runName, string name, string description, float time, float value)
+        {
+            if (!run.channels.ContainsKey(name))
+            {
+                run.AddChannel(name, description, "IMU", runName, 1.0F);
+            }
+            run.channels[name].AddPoint(time, value);
+        }
+
         /// <summary>
         /// Reads a YamuraLog v7 CAN (YL5) file into <paramref name="dataLogger"/>. Returns any
         /// non-fatal parse warnings collected while reading. (Automatic GPS/time alignment
@@ -607,6 +617,29 @@ namespace YamuraView.Core
                             dataLogger.runData[runIdx].channels["gY"].AddPoint(absTime, ay);
                             dataLogger.runData[runIdx].channels["gZ"].AddPoint(absTime, az);
                         }
+                        // IMU accel + gyro (0x41) - the node sends this on CAN id 0x40 as a longer
+                        // message; the hub logs it as record type 0x41 since the log has no length
+                        else if (recordType == 0x41)
+                        {
+                            absTime_uint = inFile.ReadUInt32();
+                            absTime = absTime_uint / 1000.0F;
+                            offsetTime = offsetTime < 0.0F ? absTime : offsetTime;
+                            absTime -= offsetTime;
+                            dataLogger.runData[runIdx].channels["Time"].AddPoint(absTime, absTime);
+
+                            float ax = inFile.ReadSingle();
+                            float ay = inFile.ReadSingle();
+                            float az = inFile.ReadSingle();
+                            float rx = inFile.ReadSingle();
+                            float ry = inFile.ReadSingle();
+                            float rz = inFile.ReadSingle();
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "gX", "Accelerometer channel gX", absTime, ax);
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "gY", "Accelerometer channel gY", absTime, ay);
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "gZ", "Accelerometer channel gZ", absTime, az);
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "GyroX", "Gyro rate X (deg/s)", absTime, rx);
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "GyroY", "Gyro rate Y (deg/s)", absTime, ry);
+                            AddIMUPoint(dataLogger.runData[runIdx], runName, "GyroZ", "Gyro rate Z (deg/s)", absTime, rz);
+                        }
                         // GPS node (0x50)
                         else if (recordType == 0x50)
                         {
@@ -624,7 +657,7 @@ namespace YamuraView.Core
                             inFile.ReadByte(); // gps second
                             float latitude = inFile.ReadInt32() / 10000000.0F;
                             float longitude = inFile.ReadInt32() / 10000000.0F;
-                            float course = inFile.ReadInt32();
+                            float course = inFile.ReadInt32() / 100000.0F; // u-blox heading is deg * 1e-5
                             float speed = (inFile.ReadInt32() / 1000.0F) * 2.23694F; // convert GPS meters/sec to MPH
                             byte SIV = inFile.ReadByte();
                             if (SIV > 0)
