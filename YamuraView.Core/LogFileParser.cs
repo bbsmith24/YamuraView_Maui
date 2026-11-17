@@ -523,6 +523,16 @@ namespace YamuraView.Core
             run.channels[name].AddPoint(time, value);
         }
 
+        /// <summary>Adds a point to a GPS quality channel, creating the channel on first use.</summary>
+        private static void AddGPSQualityPoint(RunData run, string runName, string name, string description, float time, float value)
+        {
+            if (!run.channels.ContainsKey(name))
+            {
+                run.AddChannel(name, description, "GPS", runName, 1.0F);
+            }
+            run.channels[name].AddPoint(time, value);
+        }
+
         /// <summary>
         /// Reads a YamuraLog v7 CAN (YL5) file into <paramref name="dataLogger"/>. Returns any
         /// non-fatal parse warnings collected while reading. (Automatic GPS/time alignment
@@ -640,8 +650,10 @@ namespace YamuraView.Core
                             AddIMUPoint(dataLogger.runData[runIdx], runName, "GyroY", "Gyro rate Y (deg/s)", absTime, ry);
                             AddIMUPoint(dataLogger.runData[runIdx], runName, "GyroZ", "Gyro rate Z (deg/s)", absTime, rz);
                         }
-                        // GPS node (0x50)
-                        else if (recordType == 0x50)
+                        // GPS node (0x50), and the extended GPS record (0x51) - the node sends that one
+                        // on CAN id 0x50 as a longer message, the hub logs it as 0x51 (the log has no
+                        // length): the basic fields, then time of week, accuracy, fix type, RTK state
+                        else if ((recordType == 0x50) || (recordType == 0x51))
                         {
                             absTime_uint = inFile.ReadUInt32();
                             absTime = absTime_uint / 1000.0F;
@@ -660,8 +672,27 @@ namespace YamuraView.Core
                             float course = inFile.ReadInt32() / 100000.0F; // u-blox heading is deg * 1e-5
                             float speed = (inFile.ReadInt32() / 1000.0F) * 2.23694F; // convert GPS meters/sec to MPH
                             byte SIV = inFile.ReadByte();
+                            bool extended = recordType == 0x51;
+                            float hAccMeters = 0.0F;
+                            byte fixType = 0;
+                            byte rtkState = 0;
+                            if (extended)
+                            {
+                                // GPS time of week (ms) - kept in the log for lining up post-processed
+                                // positions later; not a channel (a float can't hold it to the ms)
+                                inFile.ReadUInt32();
+                                hAccMeters = inFile.ReadUInt32() / 1000.0F; // mm -> m
+                                fixType = inFile.ReadByte();
+                                rtkState = inFile.ReadByte();
+                            }
                             if (SIV > 0)
                             {
+                                if (extended)
+                                {
+                                    AddGPSQualityPoint(dataLogger.runData[runIdx], runName, "GPS-HAcc", "GPS horizontal accuracy (m)", absTime, hAccMeters);
+                                    AddGPSQualityPoint(dataLogger.runData[runIdx], runName, "GPS-Fix", "GPS fix type (0 none, 2 2D, 3 3D, 4 GNSS+DR)", absTime, fixType);
+                                    AddGPSQualityPoint(dataLogger.runData[runIdx], runName, "GPS-RTK", "GPS RTK solution (0 none, 1 float, 2 fixed)", absTime, rtkState);
+                                }
                                 if (gpsDistanceValid)
                                 {
                                     float gpsStepDist = GPSDistance(priorLatVal, priorLongVal, latitude, longitude);
