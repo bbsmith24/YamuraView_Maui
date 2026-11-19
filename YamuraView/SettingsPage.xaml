@@ -95,6 +95,28 @@
                 <Entry Grid.Row="1" Grid.Column="1" x:Name="TrackMapMarkSizeEntry" WidthRequest="140" Keyboard="Numeric" />
             </Grid>
 
+            <Label Text="Track Map Imagery" FontAttributes="Bold" />
+            <Label Text="Satellite images drawn under the track map. Esri works without a key (an ArcGIS Location Platform key is optional) and keeps viewed tiles for offline use at the track. Google needs a Map Tiles API key from a Google Cloud project with billing enabled, and needs a connection every time. Keys are stored only on this device." FontSize="12" />
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                <Label Grid.Row="0" Grid.Column="0" Text="Source" VerticalOptions="Center" />
+                <Picker Grid.Row="0" Grid.Column="1" x:Name="MapImageryPicker" WidthRequest="200" HorizontalOptions="Start">
+                    <Picker.ItemsSource>
+                        <x:Array Type="{x:Type x:String}">
+                            <x:String>None</x:String>
+                            <x:String>Esri World Imagery</x:String>
+                            <x:String>Google Satellite</x:String>
+                        </x:Array>
+                    </Picker.ItemsSource>
+                </Picker>
+                <Label Grid.Row="1" Grid.Column="0" Text="Esri API Key" VerticalOptions="Center" />
+                <Entry Grid.Row="1" Grid.Column="1" x:Name="EsriApiKeyEntry" IsPassword="True" Placeholder="optional" />
+                <Label Grid.Row="2" Grid.Column="0" Text="Google API Key" VerticalOptions="Center" />
+                <Entry Grid.Row="2" Grid.Column="1" x:Name="GoogleApiKeyEntry" IsPassword="True" Placeholder="required for Google" />
+                <Label Grid.Row="3" Grid.Column="0" Text="Darken (%)" VerticalOptions="Center" />
+                <Entry Grid.Row="3" Grid.Column="1" x:Name="MapImageryDarkenEntry" WidthRequest="80" HorizontalOptions="Start" Keyboard="Numeric" />
+                <Button Grid.Row="4" Grid.Column="1" Text="Clear Saved Images" Clicked="OnClearMapTilesClicked" HorizontalOptions="Start" />
+            </Grid>
+
             <Label Text="Total G" FontAttributes="Bold" />
             <Label Text="Channels combined into the calculated TotalG channel, sqrt(latG² + longG²), added when a log file is read. Changing them recalculates TotalG for loaded runs." FontSize="12" />
             <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">

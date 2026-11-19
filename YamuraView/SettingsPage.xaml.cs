@@ -10,6 +10,8 @@ public partial class SettingsPage : ContentPage
     private readonly Action<IReadOnlyList<string>> onRemoveRuns;
     private readonly Action<string, string> onTotalGChannels;
     private readonly Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport;
+    private readonly Action<MapImagerySettings> onImagery;
+    private readonly int initialImageryDarken;
     private readonly List<Button> swatchButtons = new();
     private readonly List<(CheckBox Box, string RunName)> runRemovalChecks = new();
     private readonly List<(CheckBox Box, string RunName)> exportRunChecks = new();
@@ -49,9 +51,17 @@ public partial class SettingsPage : ContentPage
         Action<string, string, Color[], ChartDisplayMode, ChartDisplayMode, ChartDisplayMode, int, float, GridSpacingUnit, bool, Color, Color, Color, (Color Color, float Size), float, Dictionary<string, ChannelFilterSettings>> onSave,
         Action<IReadOnlyList<string>> onRemoveRuns,
         Func<IReadOnlyList<string>, DelimitedFormat, Task<string>> onExport,
-        Action<string, string> onTotalGChannels)
+        Action<string, string> onTotalGChannels,
+        MapImagerySettings imagery,
+        Action<MapImagerySettings> onImagery)
     {
         InitializeComponent();
+        this.onImagery = onImagery;
+        initialImageryDarken = imagery.DarkenPercent;
+        MapImageryPicker.SelectedIndex = (int)imagery.Provider;
+        EsriApiKeyEntry.Text = imagery.EsriApiKey;
+        GoogleApiKeyEntry.Text = imagery.GoogleApiKey;
+        MapImageryDarkenEntry.Text = imagery.DarkenPercent.ToString();
         this.onSave = onSave;
         this.onRemoveRuns = onRemoveRuns;
         this.onTotalGChannels = onTotalGChannels;
@@ -311,6 +321,20 @@ public partial class SettingsPage : ContentPage
         }
     }
 
+    private async void OnClearMapTilesClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            int count = MapTileCache.ClearDiskCache(MapTileCache.DefaultCacheRoot);
+            await DisplayAlertAsync("Track Map Imagery", count == 0 ? "No saved images." : $"Removed {count} saved image(s).", "OK");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"Clear map tiles failed: {ex.Message}");
+            await DisplayAlertAsync("Track Map Imagery", ex.Message, "OK");
+        }
+    }
+
     private async void OnViewLogClicked(object? sender, EventArgs e)
     {
         await Navigation.PushModalAsync(new LogViewerPage());
@@ -435,6 +459,16 @@ public partial class SettingsPage : ContentPage
         onTotalGChannels(
             LatGChannelPicker.SelectedItem as string ?? "gX",
             LongGChannelPicker.SelectedItem as string ?? "gY");
+        // 0-90; unparseable keeps the previous value. Applied before onSave, whose config
+        // save also writes the app settings these live in.
+        int darken = int.TryParse(MapImageryDarkenEntry.Text?.Trim(), out int parsedDarken) && parsedDarken is >= 0 and <= 90
+            ? parsedDarken
+            : initialImageryDarken;
+        onImagery(new MapImagerySettings(
+            (MapImageryProvider)Math.Clamp(MapImageryPicker.SelectedIndex, 0, 2),
+            EsriApiKeyEntry.Text?.Trim() ?? "",
+            GoogleApiKeyEntry.Text?.Trim() ?? "",
+            darken));
         onSave(path, autoloadFolder, colors, stripChartDisplayMode, trackMapDisplayMode, tractionCircleDisplayMode, tractionCircleTrailPoints, trackMapGridSpacing, trackMapGridUnit, showTrackMapLines, trackMapStartColor, trackMapSectorColor, trackMapFinishColor, (trackMapMarkColor, trackMapMarkSize), trackMapLineWidth, channelFilters);
         await Navigation.PopModalAsync();
     }

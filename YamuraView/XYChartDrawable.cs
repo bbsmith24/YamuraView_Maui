@@ -63,6 +63,20 @@ public class XYChartDrawable : IDrawable
     /// <summary>Overlay mark size in pixels (a square's side).</summary>
     public float MarkSize { get; set; } = TrackMarkRenderer.DefaultMarkSize;
 
+    /// <summary>Satellite tiles to draw under the traces, or null for none. Only drawn on a
+    /// Longitude (X) / Latitude (Y) chart with <see cref="EqualScale"/>, i.e. the Track Map.</summary>
+    public MapTileCache? Imagery { get; set; }
+
+    /// <summary>How much the imagery is darkened (0-1) so the traces stay readable on top.</summary>
+    public float ImageryDarken { get; set; } = 0.35f;
+
+    /// <summary>On-screen width (in drawing units) a tile should come out at - 256 divided by the
+    /// display density, so tile pixels map about one-to-one onto screen pixels.</summary>
+    public float ImageryTileSize { get; set; } = WebMercator.TileSize;
+
+    /// <summary>Most tiles one repaint may draw; a wider view drops a zoom level instead.</summary>
+    private const int MaxImageryTiles = 150;
+
     private const float FeetToMeters = 0.3048f;
     private const float MetersPerDegreeLatitude = 111320f;
 
@@ -426,6 +440,14 @@ public class XYChartDrawable : IDrawable
             visMaxY = maxY;
         }
 
+        bool isGpsMap = XChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase) &&
+                        YChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase);
+        bool drewImagery = false;
+        if (Imagery != null && EqualScale && isGpsMap)
+        {
+            drewImagery = DrawImagery(canvas, Imagery, plotLeft, plotTop, plotWidth, plotHeight, visMinX, visMaxX, visMaxY);
+        }
+
         canvas.StrokeColor = Colors.DimGray;
         canvas.StrokeSize = 1;
         canvas.DrawRectangle(plotLeft, plotTop, plotWidth, plotHeight);
@@ -754,6 +776,101 @@ public class XYChartDrawable : IDrawable
                 canvas.StrokeSize = 2;
                 canvas.DrawRectangle(px - boxSize / 2, py - boxSize / 2, boxSize, boxSize);
             }
+        }
+
+        if (Imagery != null && EqualScale && isGpsMap)
+        {
+            DrawImageryCredits(canvas, Imagery, drewImagery, plotLeft, plotTop, plotWidth, plotHeight);
+        }
+    }
+
+    /// <summary>
+    /// Draws the satellite tiles covering the visible area, then a dark wash so the traces
+    /// stand out. Each tile is placed by its corner latitude/longitude through the same linear
+    /// degrees-to-pixels mapping as the traces, so the images line up with the GPS data (in
+    /// double precision, so neighbouring tiles meet without seams). Tiles still loading are
+    /// left black. Returns whether the view was in range for imagery.
+    /// </summary>
+    private bool DrawImagery(ICanvas canvas, MapTileCache imagery, float plotLeft, float plotTop, float plotWidth, float plotHeight,
+        float visMinX, float visMaxX, float visMaxY)
+    {
+        double degreesPerPixel = (visMaxX - (double)visMinX) / plotWidth;
+        double visMinLat = visMaxY - degreesPerPixel * plotHeight;
+        if (degreesPerPixel <= 0 || visMaxX < -180 || visMinX > 180 || visMaxY < -WebMercator.MaxLatitude || visMinLat > WebMercator.MaxLatitude)
+        {
+            return false; // not a plausible GPS view (bad data) - no imagery
+        }
+        int zoom = WebMercator.ChooseZoom(degreesPerPixel, ImageryTileSize, 1, imagery.Provider.MaxZoom);
+        int x0, x1, y0, y1;
+        while (true)
+        {
+            int last = WebMercator.TileCount(zoom) - 1;
+            x0 = Math.Clamp((int)Math.Floor(WebMercator.LonToTileX(visMinX, zoom)), 0, last);
+            x1 = Math.Clamp((int)Math.Floor(WebMercator.LonToTileX(visMaxX, zoom)), 0, last);
+            y0 = Math.Clamp((int)Math.Floor(WebMercator.LatToTileY(visMaxY, zoom)), 0, last);
+            y1 = Math.Clamp((int)Math.Floor(WebMercator.LatToTileY(visMinLat, zoom)), 0, last);
+            if ((x1 - x0 + 1) * (y1 - y0 + 1) <= MaxImageryTiles || zoom <= 1)
+            {
+                break;
+            }
+            zoom--;
+        }
+        imagery.NoteViewport(zoom, x0, x1, y0, y1);
+
+        double pixelsPerDegree = 1.0 / degreesPerPixel;
+        canvas.SaveState();
+        canvas.ClipRectangle(plotLeft, plotTop, plotWidth, plotHeight);
+        for (int tx = x0; tx <= x1; tx++)
+        {
+            double left = plotLeft + (WebMercator.TileXToLon(tx, zoom) - visMinX) * pixelsPerDegree;
+            double right = plotLeft + (WebMercator.TileXToLon(tx + 1, zoom) - visMinX) * pixelsPerDegree;
+            for (int ty = y0; ty <= y1; ty++)
+            {
+                Microsoft.Maui.Graphics.IImage? tile = imagery.GetTile(zoom, tx, ty);
+                if (tile == null)
+                {
+                    continue;
+                }
+                double top = plotTop + (visMaxY - WebMercator.TileYToLat(ty, zoom)) * pixelsPerDegree;
+                double bottom = plotTop + (visMaxY - WebMercator.TileYToLat(ty + 1, zoom)) * pixelsPerDegree;
+                // half a pixel of overlap hides antialiasing hairlines between tiles
+                canvas.DrawImage(tile, (float)left, (float)top, (float)(right - left) + 0.5f, (float)(bottom - top) + 0.5f);
+            }
+        }
+        if (ImageryDarken > 0)
+        {
+            canvas.FillColor = Colors.Black.WithAlpha(Math.Clamp(ImageryDarken, 0f, 1f));
+            canvas.FillRectangle(plotLeft, plotTop, plotWidth, plotHeight);
+        }
+        canvas.RestoreState();
+        return true;
+    }
+
+    /// <summary>The source's required credits in the bottom-right corner, plus the latest
+    /// imagery error (bad key, no connection) in the top-left.</summary>
+    private static void DrawImageryCredits(ICanvas canvas, MapTileCache imagery, bool drewImagery, float plotLeft, float plotTop, float plotWidth, float plotHeight)
+    {
+        const float fontSize = 10f;
+        const float pad = 3f;
+        float bottom = plotTop + plotHeight;
+        canvas.FontSize = fontSize;
+        if (drewImagery)
+        {
+            string credits = imagery.Provider.Attribution;
+            SizeF size = canvas.GetStringSize(credits, Microsoft.Maui.Graphics.Font.Default, fontSize);
+            float width = Math.Min(size.Width + pad * 2, plotWidth);
+            canvas.FillColor = Colors.Black.WithAlpha(0.6f);
+            canvas.FillRectangle(plotLeft + plotWidth - width, bottom - size.Height - pad * 2, width, size.Height + pad * 2);
+            canvas.FontColor = Colors.LightGray;
+            canvas.DrawString(credits, plotLeft + plotWidth - width + pad, bottom - size.Height - pad, width - pad * 2, size.Height,
+                HorizontalAlignment.Right, VerticalAlignment.Center);
+        }
+        string? error = imagery.LastError;
+        if (error != null)
+        {
+            canvas.FontColor = Colors.OrangeRed;
+            canvas.DrawString(error, plotLeft + pad, plotTop + pad, plotWidth - pad * 2, fontSize * 1.6f,
+                HorizontalAlignment.Left, VerticalAlignment.Top);
         }
     }
 

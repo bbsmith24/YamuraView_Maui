@@ -14,6 +14,9 @@ public partial class MainPage : ContentPage
 
     private readonly StripChartDrawable stripChartDrawable;
     private readonly XYChartDrawable trackMapDrawable;
+    // satellite tiles under the track map (null = imagery off); see ApplyMapImagery
+    private MapTileCache? trackMapTiles;
+    private int mapTileRepaintQueued;
     private readonly XYChartDrawable tractionCircleDrawable;
 
     // per-graph selection state: strip chart is selected per (run, channel); the XY charts
@@ -189,6 +192,7 @@ public partial class MainPage : ContentPage
         StripChartView.Drawable = stripChartDrawable;
         TrackMapView.Drawable = trackMapDrawable;
         TractionCircleView.Drawable = tractionCircleDrawable;
+        ApplyMapImagery();
 
         // Strip Chart drives the cursor (vertical line); Track Map and Traction Circle just
         // track it (box cursor at the nearest point in time) - same relationship as the
@@ -1841,8 +1845,56 @@ public partial class MainPage : ContentPage
             },
             RemoveRuns,
             ExportRunsAsync,
-            SetTotalGChannels);
+            SetTotalGChannels,
+            settings.Imagery,
+            imagery =>
+            {
+                settings.Imagery = imagery;
+                ApplyMapImagery();
+            });
         await Navigation.PushModalAsync(page);
+    }
+
+    /// <summary>
+    /// (Re)creates the track map's satellite tile source from the app settings - none, Esri or
+    /// Google - and hooks its tile arrivals to repaint the map. Called at startup and whenever the
+    /// Settings page saves.
+    /// </summary>
+    private void ApplyMapImagery()
+    {
+        MapImagerySettings imagery = settings.Imagery;
+        IMapTileProvider? provider = imagery.Provider switch
+        {
+            MapImageryProvider.Esri => new EsriImageryProvider(imagery.EsriApiKey),
+            MapImageryProvider.Google => new GoogleSatelliteProvider(imagery.GoogleApiKey),
+            _ => null,
+        };
+        trackMapTiles?.Dispose();
+        trackMapTiles = provider == null ? null : new MapTileCache(provider, MapTileCache.DefaultCacheRoot);
+        if (trackMapTiles != null)
+        {
+            trackMapTiles.TileLoaded += OnMapTileLoaded;
+        }
+        trackMapDrawable.Imagery = trackMapTiles;
+        trackMapDrawable.ImageryDarken = imagery.DarkenPercent / 100f;
+        // a 256-pixel tile drawn over 256 / density units lands one-to-one on physical pixels
+        double density = DeviceDisplay.Current.MainDisplayInfo.Density;
+        trackMapDrawable.ImageryTileSize = WebMercator.TileSize / (float)Math.Max(1.0, density);
+        TrackMapView.Invalidate();
+    }
+
+    /// <summary>Tiles arrive on worker threads, often several at once - one repaint per burst.</summary>
+    private void OnMapTileLoaded()
+    {
+        if (Interlocked.Exchange(ref mapTileRepaintQueued, 1) == 1)
+        {
+            return;
+        }
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            Interlocked.Exchange(ref mapTileRepaintQueued, 0);
+            TrackMapView.Invalidate();
+        });
     }
 
     /// <summary>

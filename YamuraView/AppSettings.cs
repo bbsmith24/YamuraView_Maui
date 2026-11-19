@@ -15,6 +15,25 @@ public class AppSettings
     public string ConfigFilePath { get; set; } = Path.Combine(FileSystem.AppDataDirectory, "YamuraViewConfig.xml");
     public string AutoloadFolderPath { get; set; } = "";
 
+    // track map satellite imagery - kept here rather than in the config file because the API
+    // keys belong to this device's user, and the config file can be moved or shared
+    public MapImageryProvider MapImagery { get; set; } = MapImageryProvider.None;
+    public string EsriApiKey { get; set; } = "";
+    public string GoogleApiKey { get; set; } = "";
+    public int MapImageryDarkenPercent { get; set; } = 35;
+
+    public MapImagerySettings Imagery
+    {
+        get => new(MapImagery, EsriApiKey, GoogleApiKey, MapImageryDarkenPercent);
+        set
+        {
+            MapImagery = value.Provider;
+            EsriApiKey = value.EsriApiKey;
+            GoogleApiKey = value.GoogleApiKey;
+            MapImageryDarkenPercent = Math.Clamp(value.DarkenPercent, 0, 90);
+        }
+    }
+
     public static AppSettings Load()
     {
         if (!File.Exists(IniPath))
@@ -36,6 +55,16 @@ public class AppSettings
             {
                 settings.AutoloadFolderPath = autoloadFolder;
             }
+            if (Enum.TryParse((string?)root?.Attribute("MapImagery"), out MapImageryProvider provider))
+            {
+                settings.MapImagery = provider;
+            }
+            settings.EsriApiKey = (string?)root?.Attribute("EsriApiKey") ?? "";
+            settings.GoogleApiKey = (string?)root?.Attribute("GoogleApiKey") ?? "";
+            if (int.TryParse((string?)root?.Attribute("MapImageryDarken"), out int darken))
+            {
+                settings.MapImageryDarkenPercent = Math.Clamp(darken, 0, 90);
+            }
             return settings;
         }
         catch (Exception ex)
@@ -53,7 +82,11 @@ public class AppSettings
                 new XDeclaration("1.0", "utf-8", "yes"),
                 new XElement("Setup",
                     new XAttribute("Config", ToStoredConfigPath(ConfigFilePath)),
-                    new XAttribute("AutoloadFolder", AutoloadFolderPath)));
+                    new XAttribute("AutoloadFolder", AutoloadFolderPath),
+                    new XAttribute("MapImagery", MapImagery),
+                    new XAttribute("EsriApiKey", EsriApiKey),
+                    new XAttribute("GoogleApiKey", GoogleApiKey),
+                    new XAttribute("MapImageryDarken", MapImageryDarkenPercent)));
             doc.Save(IniPath);
         }
         catch (Exception ex)
