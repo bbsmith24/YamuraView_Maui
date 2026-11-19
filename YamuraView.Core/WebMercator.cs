@@ -38,9 +38,10 @@ public static class WebMercator
     }
 
     /// <summary>
-    /// Zoom level whose tiles come out closest to <paramref name="targetTilePixels"/> wide on
-    /// screen, for a view showing <paramref name="degreesLongitudePerPixel"/> - so a tile's
-    /// pixels land roughly one-to-one on the screen's.
+    /// Zoom level whose tiles come out no wider than <paramref name="targetTilePixels"/> on
+    /// screen, for a view showing <paramref name="degreesLongitudePerPixel"/>. Tiles are only
+    /// ever shrunk to fit, never stretched (a stretched tile looks soft), apart from a 10%
+    /// allowance so a view just past a zoom boundary doesn't load four times the tiles.
     /// </summary>
     public static int ChooseZoom(double degreesLongitudePerPixel, double targetTilePixels, int minZoom, int maxZoom)
     {
@@ -50,6 +51,6 @@ public static class WebMercator
         }
         // tile width on screen = (360 / 2^z) / degreesPerPixel  =>  z = log2(360 / (target * dpp))
         double zoom = Math.Log2(360.0 / (targetTilePixels * degreesLongitudePerPixel));
-        return Math.Clamp((int)Math.Round(zoom), minZoom, maxZoom);
+        return Math.Clamp((int)Math.Ceiling(zoom - Math.Log2(1.1)), minZoom, maxZoom);
     }
 }

@@ -186,12 +186,13 @@ public class XYChartDrawable : IDrawable
         return hash.ToHashCode();
     }
 
-    private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float minX, float maxX, float minY, float maxY)
+    private int ComputePathKey(int dataFingerprint, RectF dirtyRect, float plotHeight, float minX, float maxX, float minY, float maxY)
     {
         HashCode hash = new();
         hash.Add(dataFingerprint);
         hash.Add(dirtyRect.Width);
         hash.Add(dirtyRect.Height);
+        hash.Add(plotHeight); // the imagery credit strip shrinks the plot
         hash.Add(minX);
         hash.Add(maxX);
         hash.Add(minY);
@@ -399,9 +400,18 @@ public class XYChartDrawable : IDrawable
         }
 
         const float margin = 8;
+        bool isGpsMap = XChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase) &&
+                        YChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase);
+        MapTileCache? imagery = Imagery != null && EqualScale && isGpsMap ? Imagery : null;
+        // imagery credits sit in a strip below the plot rather than over the map
+        float creditLineHeight = 0;
+        List<string> creditLines = imagery != null
+            ? LayoutCredits(canvas, imagery.Provider.Attribution, dirtyRect.Width - margin * 2, out creditLineHeight)
+            : new List<string>();
+        float creditStrip = creditLines.Count > 0 ? creditLines.Count * creditLineHeight + CreditGap : 0;
         float plotLeft = margin, plotTop = margin;
         float plotRight = dirtyRect.Width - margin;
-        float plotBottom = dirtyRect.Height - margin;
+        float plotBottom = dirtyRect.Height - margin - creditStrip;
         float plotWidth = plotRight - plotLeft;
         float plotHeight = plotBottom - plotTop;
 
@@ -440,12 +450,10 @@ public class XYChartDrawable : IDrawable
             visMaxY = maxY;
         }
 
-        bool isGpsMap = XChannel.Equals("Longitude", StringComparison.OrdinalIgnoreCase) &&
-                        YChannel.Equals("Latitude", StringComparison.OrdinalIgnoreCase);
         bool drewImagery = false;
-        if (Imagery != null && EqualScale && isGpsMap)
+        if (imagery != null)
         {
-            drewImagery = DrawImagery(canvas, Imagery, plotLeft, plotTop, plotWidth, plotHeight, visMinX, visMaxX, visMaxY);
+            drewImagery = DrawImagery(canvas, imagery, plotLeft, plotTop, plotWidth, plotHeight, visMinX, visMaxX, visMaxY);
         }
 
         canvas.StrokeColor = Colors.DimGray;
@@ -540,7 +548,7 @@ public class XYChartDrawable : IDrawable
             // lines first so points sit on top of them in LinePoint mode
             if (drawLine)
             {
-                int pathKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
+                int pathKey = ComputePathKey(fingerprint, dirtyRect, plotHeight, minX, maxX, minY, maxY);
                 if (pathKey != cachedPathKey)
                 {
                     cachedPaths = new();
@@ -614,7 +622,7 @@ public class XYChartDrawable : IDrawable
                 // visibility margin is the stepper's max pen width, so the cache stays valid
                 // when the pen width changes (radius is still looked up at draw time).
                 const float maxPenWidth = 5f;
-                int pointKey = ComputePathKey(fingerprint, dirtyRect, minX, maxX, minY, maxY);
+                int pointKey = ComputePathKey(fingerprint, dirtyRect, plotHeight, minX, maxX, minY, maxY);
                 if (pointKey != cachedPointKey)
                 {
                     cachedPointRuns = new();
@@ -778,9 +786,9 @@ public class XYChartDrawable : IDrawable
             }
         }
 
-        if (Imagery != null && EqualScale && isGpsMap)
+        if (imagery != null)
         {
-            DrawImageryCredits(canvas, Imagery, drewImagery, plotLeft, plotTop, plotWidth, plotHeight);
+            DrawImageryCredits(canvas, imagery, drewImagery ? creditLines : null, plotLeft, plotTop, plotWidth, plotBottom);
         }
     }
 
@@ -846,30 +854,46 @@ public class XYChartDrawable : IDrawable
         return true;
     }
 
-    /// <summary>The source's required credits in the bottom-right corner, plus the latest
-    /// imagery error (bad key, no connection) in the top-left.</summary>
-    private static void DrawImageryCredits(ICanvas canvas, MapTileCache imagery, bool drewImagery, float plotLeft, float plotTop, float plotWidth, float plotHeight)
+    private const float CreditFontSize = 9f;
+    private const float CreditGap = 2f;
+
+    /// <summary>The credit text as it will be drawn: one line if it fits the width, otherwise
+    /// broken at its " | " separators, so a narrow map still shows all of it.</summary>
+    private static List<string> LayoutCredits(ICanvas canvas, string credits, float width, out float lineHeight)
     {
-        const float fontSize = 10f;
-        const float pad = 3f;
-        float bottom = plotTop + plotHeight;
-        canvas.FontSize = fontSize;
-        if (drewImagery)
+        List<string> lines = new() { credits };
+        SizeF size = canvas.GetStringSize(credits, Microsoft.Maui.Graphics.Font.Default, CreditFontSize);
+        lineHeight = size.Height;
+        if (size.Width > width && credits.Contains(" | "))
         {
-            string credits = imagery.Provider.Attribution;
-            SizeF size = canvas.GetStringSize(credits, Microsoft.Maui.Graphics.Font.Default, fontSize);
-            float width = Math.Min(size.Width + pad * 2, plotWidth);
-            canvas.FillColor = Colors.Black.WithAlpha(0.6f);
-            canvas.FillRectangle(plotLeft + plotWidth - width, bottom - size.Height - pad * 2, width, size.Height + pad * 2);
-            canvas.FontColor = Colors.LightGray;
-            canvas.DrawString(credits, plotLeft + plotWidth - width + pad, bottom - size.Height - pad, width - pad * 2, size.Height,
-                HorizontalAlignment.Right, VerticalAlignment.Center);
+            lines = credits.Split(" | ").ToList();
+        }
+        return lines;
+    }
+
+    /// <summary>The source's required credits right-aligned in the strip below the map (null
+    /// when no imagery was drawn), plus the latest imagery error (bad key, no connection) in the
+    /// map's top-left corner.</summary>
+    private static void DrawImageryCredits(ICanvas canvas, MapTileCache imagery, List<string>? creditLines, float plotLeft, float plotTop, float plotWidth, float plotBottom)
+    {
+        if (creditLines != null)
+        {
+            canvas.FontSize = CreditFontSize;
+            canvas.FontColor = Colors.Gray;
+            float lineHeight = canvas.GetStringSize("Ag", Microsoft.Maui.Graphics.Font.Default, CreditFontSize).Height;
+            for (int i = 0; i < creditLines.Count; i++)
+            {
+                canvas.DrawString(creditLines[i], plotLeft, plotBottom + CreditGap + i * lineHeight, plotWidth, lineHeight,
+                    HorizontalAlignment.Right, VerticalAlignment.Center);
+            }
         }
         string? error = imagery.LastError;
         if (error != null)
         {
+            const float pad = 3f;
+            canvas.FontSize = 10f;
             canvas.FontColor = Colors.OrangeRed;
-            canvas.DrawString(error, plotLeft + pad, plotTop + pad, plotWidth - pad * 2, fontSize * 1.6f,
+            canvas.DrawString(error, plotLeft + pad, plotTop + pad, plotWidth - pad * 2, 16f,
                 HorizontalAlignment.Left, VerticalAlignment.Top);
         }
     }

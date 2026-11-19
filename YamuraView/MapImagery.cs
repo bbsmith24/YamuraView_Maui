@@ -72,7 +72,8 @@ public sealed class EsriImageryProvider : IMapTileProvider
     public string Id => "esri";
     public int MaxZoom => 19;
     public bool AllowsDiskCache => true;
-    public string Attribution => "Powered by Esri | Esri, Maxar, Earthstar Geographics, and the GIS User Community";
+    // Esri's short form for small maps
+    public string Attribution => "Esri, Maxar, Earthstar Geographics";
 
     public async Task<byte[]> FetchTileAsync(HttpClient http, int zoom, int x, int y, CancellationToken ct)
     {
