@@ -523,6 +523,16 @@ namespace YamuraView.Core
             run.channels[name].AddPoint(time, value);
         }
 
+        /// <summary>Adds a point to an engine (RPM node) channel, creating the channel on first use.</summary>
+        private static void AddEnginePoint(RunData run, string runName, string name, string description, float time, float value)
+        {
+            if (!run.channels.ContainsKey(name))
+            {
+                run.AddChannel(name, description, "Engine", runName, 1.0F);
+            }
+            run.channels[name].AddPoint(time, value);
+        }
+
         /// <summary>Adds a point to a GPS quality channel, creating the channel on first use.</summary>
         private static void AddGPSQualityPoint(RunData run, string runName, string name, string description, float time, float value)
         {
@@ -776,7 +786,8 @@ namespace YamuraView.Core
                                 dataLogger.runData[runIdx].channels[channelName].AddPoint(absTime, interval);
                             }
                         }
-                        // Engine RPM (0x90)
+                        // Engine RPM (0x90): timestamp, averaged tach pulse period (us, 0 when
+                        // stopped), rpm, shift light state (0 off, 1 shift, 2 redline), reserved
                         else if (recordType == 0x90)
                         {
                             absTime_uint = inFile.ReadUInt32();
@@ -784,6 +795,13 @@ namespace YamuraView.Core
                             offsetTime = offsetTime < 0.0F ? absTime : offsetTime;
                             absTime -= offsetTime;
                             dataLogger.runData[runIdx].channels["Time"].AddPoint(absTime, absTime);
+
+                            inFile.ReadUInt32(); // tach pulse period (us) - rpm already derived from it
+                            ushort rpm = inFile.ReadUInt16();
+                            byte shiftState = inFile.ReadByte();
+                            inFile.ReadByte(); // reserved
+                            AddEnginePoint(dataLogger.runData[runIdx], runName, "RPM", "Engine RPM", absTime, rpm);
+                            AddEnginePoint(dataLogger.runData[runIdx], runName, "Shift", "Shift light (0 off, 1 shift, 2 redline)", absTime, shiftState);
                         }
                         // CAN interface (0xA0)
                         else if (recordType == 0xA0)
