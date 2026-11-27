@@ -91,6 +91,30 @@ Apple's toolchain (Xcode) only runs on macOS. There are two workflows:
 
 ---
 
+## Quick path: `publish-apple.sh`
+
+Once the one-time setup above is done, one script pulls the latest `master` from
+GitHub, builds the signed + notarized Mac Catalyst `.pkg` and installs it into
+`/Applications`, then builds the signed iOS app and installs and launches it on the
+USB-tethered iPhone/iPad (auto-detected via `devicectl`):
+
+```bash
+cd ~/dev/YamuraView_Maui
+./publish-apple.sh                 # everything
+./publish-apple.sh --no-notarize   # skip notarization (faster, local install only)
+./publish-apple.sh --skip-mac      # iOS device only  (--skip-ios: Mac only)
+./publish-apple.sh --udid <UDID>   # choose the device explicitly
+```
+
+It doesn't bump `buildnumber.txt`, so it builds the version the last Windows release
+set. It stops if the checkout has local changes (use `--skip-pull` to build them as
+is). The signing values below are its defaults; override them with the
+`MAC_APP_IDENTITY`, `MAC_INSTALLER_IDENTITY`, `IOS_IDENTITY`, `IOS_PROFILE` and
+`NOTARY_PROFILE` environment variables. The rest of this document is what the script
+does step by step.
+
+---
+
 ## 2. Debug builds on the Mac
 
 All commands run from the repo root.
