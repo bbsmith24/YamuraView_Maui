@@ -425,6 +425,45 @@ public class StripChartDrawable : IDrawable
     }
 
     /// <summary>
+    /// The inverse of <see cref="GetPerRunCursorTimes"/> for one run: the X-axis value at the
+    /// run's raw timestamp. Time axis: add the run's TimeOffset. Any other axis: the X channel's
+    /// value at the nearest logged time (plus DistanceOffset for a distance axis, matching how
+    /// the traces are plotted). Null when the run doesn't have the X channel. Used to drive the
+    /// cursor from a time-based source such as a synced video.
+    /// </summary>
+    public float? AxisValueForRawTime(RunData run, float rawTime)
+    {
+        if (XAxisChannel == TimeAxis)
+        {
+            return rawTime + run.TimeOffset;
+        }
+        if (!run.channels.TryGetValue(XAxisChannel, out DataChannel? xChan) || xChan.DataPoints.Count == 0)
+        {
+            return null;
+        }
+        IList<float> times = xChan.DataPoints.Keys;
+        int lo = 0, hi = times.Count - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (times[mid] < rawTime)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (lo > 0 && Math.Abs(times[lo - 1] - rawTime) < Math.Abs(times[lo] - rawTime))
+        {
+            lo--;
+        }
+        bool xIsDistance = XAxisChannel.StartsWith("Distance", StringComparison.OrdinalIgnoreCase);
+        return xChan.DataPoints.Values[lo] + (xIsDistance ? run.DistanceOffset : 0f);
+    }
+
+    /// <summary>
     /// The run's raw timestamp at a raw (offset-free) distance, via the xDistance channel -
     /// keyed distance -> time, so it's sorted by distance and binary-searchable directly
     /// (its sibling Distance is keyed time -> distance, the other conversion direction).

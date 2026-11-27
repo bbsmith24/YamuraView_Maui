@@ -99,6 +99,16 @@ namespace YamuraView.Core
         public float[] minMaxTimestamp = new float[] { float.MaxValue, float.MinValue };
         public float DistanceOffset { get; set; } = 0.0F;
         public float TimeOffset { get; set; } = 0.0F;
+
+        /// <summary>
+        /// GPS UTC clock anchor: UTC (seconds since the Unix epoch) = raw run time +
+        /// this offset. Estimated from the GPS records' date/time while parsing (see
+        /// <see cref="GpsUtcAnchorEstimator"/>); NaN when the log has no usable GPS time.
+        /// Lets other GPS-timed sources - a GoPro's GPMF telemetry - be placed on the run's
+        /// timeline automatically.
+        /// </summary>
+        public double GpsUtcOffsetSeconds { get; set; } = double.NaN;
+
         public RunData(string run)
         {
             runName = run;

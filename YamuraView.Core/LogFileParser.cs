@@ -561,6 +561,7 @@ namespace YamuraView.Core
             bool hasGPS = false;
             string channelName;
             List<float> timestamps = new List<float> { 0.0F };
+            GpsUtcAnchorEstimator utcAnchor = new();
 
             StringBuilder errStr = new StringBuilder();
 
@@ -671,12 +672,12 @@ namespace YamuraView.Core
                             absTime -= offsetTime;
                             dataLogger.runData[runIdx].channels["Time"].AddPoint(absTime, absTime);
 
-                            inFile.ReadUInt16(); // gps year
-                            inFile.ReadByte(); // gps month
-                            inFile.ReadByte(); // gps day
-                            inFile.ReadByte(); // gps hour
-                            inFile.ReadByte(); // gps minute
-                            inFile.ReadByte(); // gps second
+                            ushort gpsYear = inFile.ReadUInt16();
+                            byte gpsMonth = inFile.ReadByte();
+                            byte gpsDay = inFile.ReadByte();
+                            byte gpsHour = inFile.ReadByte();
+                            byte gpsMinute = inFile.ReadByte();
+                            byte gpsSecond = inFile.ReadByte();
                             float latitude = inFile.ReadInt32() / 10000000.0F;
                             float longitude = inFile.ReadInt32() / 10000000.0F;
                             float course = inFile.ReadInt32() / 100000.0F; // u-blox heading is deg * 1e-5
@@ -686,17 +687,19 @@ namespace YamuraView.Core
                             float hAccMeters = 0.0F;
                             byte fixType = 0;
                             byte rtkState = 0;
+                            uint? timeOfWeekMs = null;
                             if (extended)
                             {
-                                // GPS time of week (ms) - kept in the log for lining up post-processed
-                                // positions later; not a channel (a float can't hold it to the ms)
-                                inFile.ReadUInt32();
+                                // GPS time of week (ms) - not a channel (a float can't hold it to the
+                                // ms), but its sub-second part pins the UTC anchor below
+                                timeOfWeekMs = inFile.ReadUInt32();
                                 hAccMeters = inFile.ReadUInt32() / 1000.0F; // mm -> m
                                 fixType = inFile.ReadByte();
                                 rtkState = inFile.ReadByte();
                             }
                             if (SIV > 0)
                             {
+                                utcAnchor.Add(absTime, gpsYear, gpsMonth, gpsDay, gpsHour, gpsMinute, gpsSecond, timeOfWeekMs);
                                 if (extended)
                                 {
                                     AddGPSQualityPoint(dataLogger.runData[runIdx], runName, "GPS-HAcc", "GPS horizontal accuracy (m)", absTime, hAccMeters);
@@ -832,6 +835,8 @@ namespace YamuraView.Core
                     }
                 }
             }
+
+            dataLogger.runData[runIdx].GpsUtcOffsetSeconds = utcAnchor.Estimate();
 
             // interpolate for all times between GPS distance points - actual GPS distance points at
             // 10Hz are sparse compared to sensor data

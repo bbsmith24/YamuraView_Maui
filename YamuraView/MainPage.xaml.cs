@@ -468,7 +468,12 @@ public partial class MainPage : ContentPage
             case StripChartGesture.TouchScrub:
             case StripChartGesture.None:
                 // None = mouse hovering with no press - the cursor tracks the pointer
-                // either way
+                // either way, except that a plain hover doesn't interrupt a playing video
+                // (crossing the chart on the way to a button would pause it); a press does
+                if (stripChartGesture == StripChartGesture.None && videoPlaying)
+                {
+                    break;
+                }
                 SetCursorTime(
                     position.HasValue ? stripChartDrawable.PixelXToTime((float)position.Value.X) : null,
                     position.HasValue ? (float)position.Value.Y : null);
@@ -738,13 +743,66 @@ public partial class MainPage : ContentPage
     }
 
     /// <summary>
+    /// When zoomed in, shifts the zoom window (same width) by however far the cursor is
+    /// moving, so the cursor stays at the same relative position on screen - used while a
+    /// synced video drives the cursor. If the cursor isn't currently inside the window (or
+    /// there's none yet), the window is centred on the new position instead. The window is
+    /// clamped to the data range, so near either end the cursor drifts toward the edge.
+    /// </summary>
+    private void PanZoomWindowWithCursor(float? oldCursor, float newCursor)
+    {
+        float? dataMin = stripChartDrawable.DataMinX;
+        float? dataMax = stripChartDrawable.DataMaxX;
+        float? zoomMin = stripChartDrawable.ZoomMinX;
+        float? zoomMax = stripChartDrawable.ZoomMaxX;
+        if (!dataMin.HasValue || !dataMax.HasValue || !zoomMin.HasValue || !zoomMax.HasValue)
+        {
+            return;
+        }
+        float width = zoomMax.Value - zoomMin.Value;
+        if (width <= 0 || width >= dataMax.Value - dataMin.Value - 0.0001f)
+        {
+            return;
+        }
+
+        float newMin;
+        if (oldCursor is float old && old >= zoomMin.Value && old <= zoomMax.Value)
+        {
+            newMin = zoomMin.Value + (newCursor - old);
+        }
+        else if (newCursor < zoomMin.Value || newCursor > zoomMax.Value)
+        {
+            newMin = newCursor - width / 2f;
+        }
+        else
+        {
+            return; // already in view and no reference to keep - leave the window alone
+        }
+        newMin = Math.Clamp(newMin, dataMin.Value, dataMax.Value - width);
+        if (newMin == zoomMin.Value)
+        {
+            return;
+        }
+
+        stripChartDrawable.ZoomMinX = newMin;
+        stripChartDrawable.ZoomMaxX = newMin + width;
+        ApplyTimeRangeFilter(newMin, newMin + width);
+        suppressScrollBarEvent = true;
+        StripChartScrollBar.Value = Math.Clamp(newMin, StripChartScrollBar.Minimum, StripChartScrollBar.Maximum);
+        suppressScrollBarEvent = false;
+        RefreshCharts();
+    }
+
+    /// <summary>
     /// Updates the Strip Chart's own cursor line (in whatever units its X axis uses - e.g.
     /// seconds for Time, or arbitrary units for Distance) plus the other two charts' box
     /// cursor. The other charts key their data by raw, unoffset timestamp, so the axis
     /// value is converted per run - the same aligned cursor position is a different raw
     /// time in each run once alignment offsets differ.
     /// </summary>
-    private void SetCursorTime(float? axisValue, float? pixelY = null)
+    /// <param name="fromVideo">True when a playing/stepped synced video is moving the
+    /// cursor - the video mustn't then be sent back to where it already is.</param>
+    private void SetCursorTime(float? axisValue, float? pixelY = null, bool fromVideo = false)
     {
         // remember where the pointer is vertically so the readout can dodge it (drawn at
         // the opposite half of the plot); a null keeps the last known position - touch
@@ -767,6 +825,10 @@ public partial class MainPage : ContentPage
             tractionCircleDrawable.CursorTimes = cursorTimes;
             TrackMapView.Invalidate();
             TractionCircleView.Invalidate();
+            if (!fromVideo && cursorTimes != null)
+            {
+                VideoFollowCursor(cursorTimes);
+            }
         }
     }
 
@@ -803,6 +865,15 @@ public partial class MainPage : ContentPage
 
     private void OnReplayPlayPause(object? sender, EventArgs e)
     {
+        if (VideoDrivesReplay)
+        {
+            // a synced video on screen plays in real time and carries the cursor with it
+            // (only the sweep timer is stopped here - PauseReplay would pause the video too)
+            replayPlaying = false;
+            replayTimer?.Stop();
+            ToggleVideoPlayback();
+            return;
+        }
         if (replayPlaying)
         {
             PauseReplay();
@@ -830,6 +901,7 @@ public partial class MainPage : ContentPage
         replayPlaying = false;
         replayTimer?.Stop();
         ReplayPlayPauseButton.Text = "▶";
+        PauseVideo();
     }
 
     private IDispatcherTimer CreateReplayTimer()
@@ -918,6 +990,13 @@ public partial class MainPage : ContentPage
             4 => 4f,
             _ => 1f,
         };
+        if (videoPath != null)
+        {
+            // carry the playback estimate over to the new rate before changing it
+            videoLastPosition = CurrentVideoPosition();
+            videoLastPositionAt = DateTime.UtcNow;
+            VideoPlayer.Speed = replaySpeed;
+        }
     }
 
     private void OnReplayLoopToggle(object? sender, EventArgs e)
@@ -1766,6 +1845,7 @@ public partial class MainPage : ContentPage
             stripChartSelection.RemoveWhere(s => s.ChannelName == DeltaTime.ChannelName);
         }
 
+        OnRunsRemovedForVideo(names);
         AppLogger.Log($"Removed run(s): {string.Join(", ", runNames)}");
         UpdateCursorEligibleRuns();
         RefreshCharts();
@@ -2340,6 +2420,8 @@ public partial class MainPage : ContentPage
                     parser.LongGChannel = longG;
                 }
             }
+
+            LoadVideoConfig(root);
         }
         catch (Exception ex)
         {
@@ -2407,7 +2489,8 @@ public partial class MainPage : ContentPage
                         BuildRunSettingElements(tractionCircleRunColor, tractionCircleInvertedRuns, tractionCircleRunPenWidth)),
                     new XElement("TotalG",
                         new XAttribute("LatG", parser.LatGChannel),
-                        new XAttribute("LongG", parser.LongGChannel))));
+                        new XAttribute("LongG", parser.LongGChannel)),
+                    BuildVideoConfigElement()));
 
             string? dir = Path.GetDirectoryName(settings.ConfigFilePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
