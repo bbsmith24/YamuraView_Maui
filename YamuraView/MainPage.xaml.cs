@@ -235,6 +235,26 @@ public partial class MainPage : ContentPage
                 element.PointerWheelChanged += OnStripChartPointerWheel;
             }
         };
+#elif MACCATALYST
+        // Mac: scroll (mouse wheel, Magic Mouse or two-finger trackpad swipe) zooms like the
+        // Windows wheel - an iMac's Magic Mouse can't pinch at all. A scroll-only pan
+        // recognizer (no touch types) so clicks and drags still reach the MAUI gestures.
+        StripChartView.HandlerChanged += (_, _) =>
+        {
+            if (StripChartView.Handler?.PlatformView is UIKit.UIView view)
+            {
+                if (stripChartScrollZoom != null)
+                {
+                    stripChartScrollZoom.View?.RemoveGestureRecognizer(stripChartScrollZoom);
+                }
+                stripChartScrollZoom = new UIKit.UIPanGestureRecognizer(OnStripChartScrollZoom)
+                {
+                    AllowedScrollTypesMask = UIKit.UIScrollTypeMask.All,
+                    AllowedTouchTypes = Array.Empty<Foundation.NSNumber>()
+                };
+                view.AddGestureRecognizer(stripChartScrollZoom);
+            }
+        };
 #endif
 
         ReplaySpeedPicker.SelectedIndex = 2; // 1x (also sets replaySpeed via its handler)
@@ -256,6 +276,37 @@ public partial class MainPage : ContentPage
         float factor = MathF.Pow(WheelZoomFactor, delta / 120f);
         ZoomStripChartAroundPixel((float)point.Position.X, factor);
         e.Handled = true;
+    }
+#endif
+
+#if MACCATALYST
+    private UIKit.UIPanGestureRecognizer? stripChartScrollZoom;
+
+    // points of scroll per WheelZoomFactor step - about one mouse-wheel notch
+    private const float ScrollPointsPerZoomStep = 40f;
+
+    private void OnStripChartScrollZoom(UIKit.UIPanGestureRecognizer recognizer)
+    {
+        if (recognizer.State != UIKit.UIGestureRecognizerState.Began &&
+            recognizer.State != UIKit.UIGestureRecognizerState.Changed)
+        {
+            return;
+        }
+        UIKit.UIView? view = recognizer.View;
+        if (view == null)
+        {
+            return;
+        }
+        // incremental: take this event's movement, then zero it for the next one
+        float dy = (float)recognizer.TranslationInView(view).Y;
+        recognizer.SetTranslation(CoreGraphics.CGPoint.Empty, view);
+        if (dy == 0)
+        {
+            return;
+        }
+        // scrolling up (content moving up, as with the Windows wheel turned away) zooms in
+        float factor = MathF.Pow(WheelZoomFactor, -dy / ScrollPointsPerZoomStep);
+        ZoomStripChartAroundPixel((float)recognizer.LocationInView(view).X, factor);
     }
 #endif
 
