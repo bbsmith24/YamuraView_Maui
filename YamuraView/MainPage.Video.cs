@@ -318,6 +318,7 @@ public partial class MainPage
         PauseVideo();
         VideoPlayer.Stop();
         VideoPlayer.Source = null;
+        VideoFilePicker.Release();
         videoPath = null;
         videoRunName = null;
         videoOffset = null;
